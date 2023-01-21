@@ -1,0 +1,42 @@
+{ nixpkgs ? import <nixpkgs> {}, compiler ? "default", doBenchmark ? false }:
+
+let
+
+  inherit (nixpkgs) pkgs;
+
+  f = { mkDerivation, aeson, base, bibtex, bytestring, containers
+      , deepseq, directory, exceptions, extra, HTTP, http-client
+      , http-client-tls, http-types, jsaddle, lens, lib, megaparsec
+      , MissingH, modern-uri, mtl, network-uri, parallel, parsec, process
+      , random, raw-strings-qq, replace-megaparsec, stm, template-haskell
+      , temporary, text, time, transformers, webdriver, which, witherable
+      }:
+      mkDerivation {
+        pname = "scrappy";
+        version = "0.1.0.4";
+        src = ./.;
+        libraryHaskellDepends = [
+          aeson base bibtex bytestring containers deepseq directory
+          exceptions extra HTTP http-client http-client-tls http-types
+          jsaddle lens megaparsec MissingH modern-uri mtl network-uri
+          parallel parsec process random raw-strings-qq replace-megaparsec
+          stm template-haskell temporary text time transformers webdriver
+          which witherable
+        ];
+        testHaskellDepends = [ base ];
+        homepage = "https://github.com/Ace-Interview-Prep/scrappy";
+        description = "html pattern matching library and high-level interface concurrent requests lib for webscraping";
+        license = lib.licenses.bsd3;
+      };
+
+  haskellPackages = if compiler == "default"
+                       then pkgs.haskellPackages
+                       else pkgs.haskell.packages.${compiler};
+
+  variant = if doBenchmark then pkgs.haskell.lib.doBenchmark else pkgs.lib.id;
+
+  drv = variant (haskellPackages.callPackage f {});
+
+in
+
+  if pkgs.lib.inNixShell then drv.env else drv

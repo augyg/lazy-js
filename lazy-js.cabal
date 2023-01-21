@@ -1,0 +1,40 @@
+cabal-version:       >=1.10
+name:                lazy-js
+version:             0.1.0.0
+synopsis:            lazy javascript runner with an ability to fake browser APIs
+description:
+        Lightweight package which runs any javascript statement or statements by
+        first parsing some Javascript statements into JSContext that can be interacted with by
+        ensuing commands
+
+        Note that this is not meant to parse any Javascript in existence but rather syntactically correct
+        JS.
+
+        This functionality originally was apart of the scrappy package but has been separated out into its own
+        package. For this reason the design is around parsing and handling the execution of JS such as
+        when browser events happen much like the jsdom npm package and so early versions may not have
+        a safe API or typesystem for adding in your own JS however this can simply be done by writing
+        raw JS using `eval`. Contributions welcome. 
+homepage:            https://github.com/augyg/lazy.jhs
+license:             BSD3
+license-file:        LICENSE
+author:              Galen Sprout
+maintainer:          galen.sprout@gmail.com
+bug-reports:         https://github.com/Ace-Interview-Prep/scrappy/issues
+x-curated:           uncurated-seeking-adoption
+stability:           Experimental
+category:            Javascript 
+build-type:          Simple
+extra-source-files:  README.MD
+library
+
+  exposed-modules:    JS.JS 
+  build-depends:       base
+                     , parsec
+                     , containers
+                     , transformers
+                     , text
+                     , aeson
+  hs-source-dirs:      src
+  default-language:    Haskell2010
+

@@ -1,0 +1,3 @@
+module JS.ScrapeNA where
+
+-- | Everything here is no longer in use and we are trying to move away from this model
