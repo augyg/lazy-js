@@ -29,9 +29,9 @@ import Data.List (intercalate)
 
 testVarString = "var ue_id = 'WEBRWTDQ8PSAD8KS77XA'"
 
-test1 = parse (jsVarName >> jsString ) "" testVarString
-test3 = parse (jsVarName >> jsBool ) "" "var ue_navtiming = true"
-test4 = parse (jsVarName >> jsNull ) "" "var ue_navtiming = null"
+-- test1 = parse (jsVarName >> jsString ) "" testVarString
+-- test3 = parse (jsVarName >> jsBool ) "" "var ue_navtiming = true"
+-- test4 = parse (jsVarName >> jsNull ) "" "var ue_navtiming = null"
 
 between' :: Stream s m Char => ParsecT s u m open -> ParsecT s u m end -> ParsecT s u m a -> ParsecT s u m [a]
 between' open close inside = do
@@ -104,26 +104,27 @@ jsValue =
   -- <|> jsTuple 
 
 
-
-data Arg a = ArgName Name | ArgDef Name (JSValue a)
-data Function a = Function [Arg a] [Dependency] [Statement]
-jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
-jsFunction = do
-  args <- functionHead
-  bodyStatements <- functionBody args
+-- | Arg is just meant to represent names for special scopes, not args passed in a statement
+data ArgName a = ArgName Name | ArgDef Name (JSValue a)
+data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
+-- jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
+-- jsFunction = do
+--   (fnName, args) <- functionHead
+--   (bodyStatements, deps) <- functionBody args
+--   pure $ Function (Just fnName) args deps bodyStatements
   
-  where
-    functionBody headArgs = do
-      between' (char '{') (char '}') $ many (jsStatement headArgs) 
+--   where
+--     functionBody headArgs = do
+--       between' (char '{') (char '}') $ many (jsStatement headArgs) 
     
-    functionHead = do
-      string "function"
-      fnName <- jsValidName
-      args <- jsArgTuple
-      pure (fnName, args) 
+--     functionHead = do
+--       string "function"
+--       fnName <- jsValidName
+--       args <- jsArgTuple
+--       pure (fnName, args) 
       
 
-jsArgTuple :: (Read a, Stream s m Char) => ParsecT s u m [Arg a]
+jsArgTuple :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [ArgName a]
 jsArgTuple = do
   char '(' *> sepBy (jsArgName <|> withDefaultArg) (char ',') <* char ')'
       
@@ -139,102 +140,70 @@ jsArgTuple = do
     jsArgName = ArgName <$> jsValidName
       
 
-data JSStatement = JSStatement [Dependency] (Maybe Name) JS
+data JSStatement a = JSStatement [Dependency] (Maybe Name) (Expr a) --JS
 
 between1 :: Stream s m Char => ParsecT s u m open -> ParsecT s u m end -> ParsecT s u m a -> ParsecT s u m a 
 between1 open end match = open *> match <* end
 
-jsStatement :: Stream s m Char => ParsecT s u m JSStatement
-jsStatement = do
+jsStatement :: (Fractional a, Read a, Stream s m Char) => a -> ParsecT s u m (JSStatement a)
+jsStatement _ = do
   mName <- optionMaybe jsVarName
   (expr, deps) <- jsExpression
   -- | either followed by ; or \n
   -- | oneOf ['\n', ';']
-  pure $ JSStatment deps mName expr
+  pure $ JSStatement deps mName expr
 
 
-parseCallsWith :: Stream s m Char => ParsecT s u m (Name, [Arg])
+parseCallsWith :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, [(Expr a, [Dependency])])
 parseCallsWith = do
   refdName <- jsValidName
   args <- option [] jsArgTuple
   pure (refdName, args) 
   where
     
-    jsArgTuple :: (Read a, Stream s m Char) => ParsecT s u m [Arg a]
+    jsArgTuple :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [(Expr a, [Dependency])]
     jsArgTuple = do
       char '(' *> sepBy jsExpression (char ',') <* char ')'
       
-      
-        -- where
-        --   withDefaultArg = do
-        --     name <- jsValidName
-        --     manyTill_ (char ' ') (char '=')
-        --     many (char ' ')
-        --     v <- jsValue
-        --     pure $ ArgDef name v
 
-        --   jsArgName = ArgName <$> jsValidName
+data DotRef a = Property Name | Fn (Function a) 
 
-objects and functions in terms of a chain are more like interchangeable pieces where objects are just scopes
 
-like i can do
+data Ref' a = Prop Name | FnCall Name [(Expr a, [Dependency])] --(Function a)
 
-f(1) 
+type RefChain a = [Ref' a] -- f(1).x(2).y AND `name` 
 
-unless const myobject = { f : function(x){ return x } }
+data Expr a = Val (JSValue a) | Reference [Ref' a] --(RefChain a)
 
-then I must do:
 
-myobject.f(1) 
+-- as this recurses, we will need to add dependencies
+-- | Actually this is only named expressions: for and while cannot be in this named context
+jsExpression :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m ((Expr a), [Dependency])
+jsExpression = --do
   
-but it can also be
+  (,dependencyToDO) <$> (Val <$> jsValue)
+  <|> (,dependencyToDO) <$> existingConstructRef
+  -- <|> functionApplication 
 
-myobject.g
-
-and also objects are interesting because the question, what code do we need to run?
-  1) Constructor
-  2) g, or rather the .<jsName>'s
-     and whatever constructs are referenced by the scopes
-     2.1) I suppose you could say that for the expr: a.b.c.d:
-          -> if d references a construct in c or b or a then we need it
-          -> Although shitty method: can just run all of a 
-  
-
--- Should this also be a function? 
-data ObjRef = ObjRef [Name] (Maybe [Arg])
-
-
--- as this recurses, we will need to add dependencies 
-jsExpression = do
-  jsValue
-  
-  <|> existingObjRef
-  <|> jsFunction
-  <|> functionApplication 
-
-  <|> jsValidName -- IS REF 
+  -- <|> jsValidName -- IS REF
+  -- <|> loop 
   -- | COMPLICATION:
     -- WE CAN ALWAYS JUST DO .something so this is like a chain on the returned props which is
     -- gonna be another `parseCallsWith` 
 
   where
+    dependencyToDO :: [Dependency]
+    dependencyToDO = undefined
+    
+    existingConstructRef :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Expr a)
+    existingConstructRef = Reference <$> (sepBy (name <|> nameWithArgs) (char '.'))
+      where
+        name = Prop <$> jsValidName 
+        nameWithArgs = do
+          (n, argExprWithDeps) <- parseCallsWith
+          pure $ FnCall n argExprWithDeps
 
-    functionApplication :: Stream s m Char => ParsecT s u m FunctionRef
-    functionApplication = parseCallsWith 
 
-    existingObjRef :: Stream s m Char => ParsecT s u m ObjRef
-    existingObjRef = do
-      jsValidName -- if it's a name, we know that it must be a reference
-      many (char '.' >> jsValidName)
-      between1 (char '(') (char ')') $ jsExpression 
-
-    -- has a dependency by default 
-    objInstantiation = do
-      string "new"
-      many (char ' ')
-      nameRefd <- jsValidName
-      args <- jsArgTuple 
-      pure (nameRefd, args)
       
       
 -- | Note that is purely done out of weird timing
@@ -270,6 +239,136 @@ jsExpression = do
 --     jsValue = aeson with .property possibility 
           
 
+      
+        -- where
+        --   withDefaultArg = do
+        --     name <- jsValidName
+        --     manyTill_ (char ' ') (char '=')
+        --     many (char ' ')
+        --     v <- jsValue
+        --     pure $ ArgDef name v
+
+        --   jsArgName = ArgName <$> jsValidName
+
+-- objects and functions in terms of a chain are more like interchangeable pieces where objects are just scopes
+
+-- like i can do
+
+-- f(1) 
+
+-- unless const myobject = { f : function(x){ return x } }
+
+-- then I must do:
+
+-- myobject.f(1) 
+  
+-- but it can also be
+
+-- myobject.g
+
+-- and also objects are interesting because the question, what code do we need to run?
+--   1) Constructor
+--   2) g, or rather the .<jsName>'s
+--      and whatever constructs are referenced by the scopes
+--      2.1) I suppose you could say that for the expr: a.b.c.d:
+--           -> if d references a construct in c or b or a then we need it
+--           -> Although shitty method: can just run all of a 
+  
+
+-- var x = y -> Ref "y" []
+-- var x = y.z -> Ref "y" [Property "z"]
+-- var x = y.z.z2.a(1) -> Ref "y" [Property "z", Property "z2", Fn (Function [Arg a] [someDeps] [someStatements])
+
+
+-- --data Function a = Function [Arg a] [Dependency] [Statement]
+-- (Maybe [Arg])
+
+
+-- Name <+> f <+> f .. 
+
+-- where f = (Nothing <|> Name <|> Function)
+
+
+-- TopLevelRef <+> Recursion
+
+
+
+-- (char '.') >> (Name <|> Function) 
+
+-- (this also definitively seperates it from being a plain top-level function call) 
+
+-- f = do
+--   name <|> function
+--   mF <- optionMaybe f
+--   case mF of
+--     Nothing ->  
+
+
+-- Should this also be a function?
+-- intercalate "." names 
+--data Ref = Ref Name [Arg a] [DotRef a]
+
+    
+    
+    
+    -- functionApplication :: Stream s m Char => ParsecT s u m FunctionRef
+    -- functionApplication = parseCallsWith 
+
+    -- existingConstructRef :: Stream s m Char => ParsecT s u m ObjRef
+    -- existingConstructRef = do
+    --   n <- jsValidName
+    --   option [] $ jsTupleArgs
+    --   optionMaybe f
+    --   where
+    --     f = do
+    --       char '.'
+    --       n <- jsValidName
+    --       option [] $ jsTupleArgs 
+    --       maybeMore <- optionMaybe f
+    --       case maybeMore of
+    --         (x:xs) :: DotRef -> Add to overall dot ref
+    --         Nothing -> we've only scoped in once i guess so return x 
+          
+
+
+      
+    --   --either (name <|> nameWithArgs <|> nothing)
+    --   cont <- optionMaybe (name <|> nameWithArgs)
+    --   case cont of
+    --     Nothing -> -- is simple property
+    --       pure $ ObjRef [n] []
+    --     Just (ObjRef names dotRef) ->
+    --       pure $ ObjRef (n:names) dotRef
+
+    --   where
+    --     nothing = mzero 
+    --     name = do
+    --       jsValidName
+    --       option [] $ (char '.' >> existingConstructRef)
+
+    --     nameWithArgs = do 
+    --       jsValidName
+
+    --       jsTupleArgs -- not really
+    --       option [] $ (char '.' >> existingConstructRef)
+    --       -- or
+    --       -- jsCallFunction
+ 
+
+    -- existingObjRef :: Stream s m Char => ParsecT s u m ObjRef
+    -- existingObjRef = do
+    --   jsValidName -- if it's a name, we know that it must be a reference
+    --   many (char '.' >> jsValidName)
+    --   between1 (char '(') (char ')') $ jsExpression 
+
+    -- -- has a dependency by default 
+    -- objInstantiation = do
+    --   string "new"
+    --   many (char ' ')
+    --   nameRefd <- jsValidName
+    --   args <- jsArgTuple 
+    --   pure (nameRefd, args)
+
 -- foreign import javascript unsafe
 -- "1+1" 
 
@@ -297,7 +396,7 @@ parseStatement :: Text -> Statement
 parseStatement = undefined
 
 --Map Name JSValue 
-execJS :: MonadJS m => [JSStatement] -> m () 
+execJS :: MonadJS m => [JSStatement'] -> m () 
 execJS = do undefined
   
   -- |case js of
@@ -330,10 +429,10 @@ data Condition = Condition RawJS
 data JSExpression = JSExpr [Dependency] RawJS 
 
 
-data JSValue' = JSValue' JSStatement [Update]
+data JSValue' = JSValue' JSStatement' [Update]
 
 data Update = Reassign JSExpression
-     	    | Iterate JSStatement 
+     	    | Iterate JSStatement'
 
 
 data ExprPiece = ExprPiece String 
