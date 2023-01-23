@@ -180,16 +180,6 @@ getJSVal' = undefined
 
 -- NOTE: remember to test Higher Kinded datatypes that are semigroup-ish
 
-mkScriptInterop :: Script -> [JSInteraction] -> Script
-mkScriptInterop script interactions = undefined
-
-
-
--- | Stateful runVDOM
-
-runVDOMST :: JS -> JSDomT IO (M.Map Name JSVal)
-runVDOMST xs = undefined
-
 
 
 

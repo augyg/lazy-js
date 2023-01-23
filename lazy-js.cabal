@@ -28,7 +28,8 @@ build-type:          Simple
 extra-source-files:  README.MD
 library
 
-  exposed-modules:    JS.JS 
+  exposed-modules:    JS.JS
+                      JS.JSFFIParse
   build-depends:       base
                      , parsec
                      , containers

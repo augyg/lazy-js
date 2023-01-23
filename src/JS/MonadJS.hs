@@ -24,6 +24,10 @@ getsAST name = undefined
 
 -- setsAST :: MonadJS => Name -> JSValue -> m () 
 -- setsAST name val = undefined
+-- -- | Bool if String
+-- setJSVal :: Name -> JSVal -> JS 
+-- setJSVal jsName jsVal = JS $ "let " <> (pack jsName) <> " = " <> (showJSType . f' $ jsVal) <> ";"
+
 
 -- | Declare and save what you want to carry from last run 
 orderJS :: MonadJS m => M.Map String String -> m ()

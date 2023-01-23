@@ -26,3 +26,16 @@ overrideScript overrides (JS js) = JS $ pack $ streamEdit (jsSetVariable overrid
                  in unpack $ unJS $ setJSVal name v 
 findJSVal :: ParsecT s u m a -> [JSVal] -> a
 findJSVal = undefined
+
+
+f' :: JSVal -> JSType 
+f' val
+  | length (filter (== '{') val) == length (filter (== '}') val) = JSONString val
+  | exists (oneOf (['A'..'Z'] <> ['a'..'z'])) val = JSString val
+  | length val == (length $ filter (\x -> elem x ['0'..'9']) val) = JSNumber val  
+  | otherwise = error "unknown javascript data type" 
+
+
+-- | Bool if String
+setJSVal :: Name -> JSVal -> JS 
+setJSVal jsName jsVal = JS $ "let " <> (pack jsName) <> " = " <> (showJSType . f' $ jsVal) <> ";"

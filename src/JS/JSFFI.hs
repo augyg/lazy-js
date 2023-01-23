@@ -7,7 +7,7 @@ Does not handle Object.*(someObj, js) cases (of Type Update)
 
 |-}
 
-module Scrappy.JSFFI where
+module JS.JSFFIParse where
 
 
 

@@ -1,5 +1,9 @@
 module JSDOM where
 
+-- TODO(galen): Make this an actual module once we have the JS part figured out and make it apart of scrappy 
+-- not lazy-js
+
+
 -- | This is an experimental module to see if I could replicate enough of JSDOM to succeed
 -- | -> this just works off the dir experimental/
 
