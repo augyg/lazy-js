@@ -3,6 +3,7 @@ module JS.ScrapeNA where
 -- | Everything here is no longer in use and we are trying to move away from this model
 
 
+
 -- | If we can parse JSON (which we can) then we have Objects
 -- | For now though, I will just takeTill ;
 -- | and then reset 

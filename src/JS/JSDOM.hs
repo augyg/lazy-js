@@ -11,6 +11,34 @@ html :: String
 html = readFile "experimental/full-dom.html"
 
 
+
+-- | NOT REALLY SCRAPE BUT JUST 
+-- | Scripts can reference the DOM by using the name 'dom' 
+-- | Could make this a Monad if it is worth it
+-- | Currently, you need to console.log the return value or this runs but doesnt return
+fetchVDOMWith :: Link -> JS -> ExceptT ParseError IO (Html, [JSVal])
+fetchVDOMWith (Link url) (JS js) = do
+  rawJSVal <- liftIO $ runJSWithCli $ mkVDOMScript
+  except $ parse jsStdOutParser "" rawJSVal 
+  where
+    mkVDOMScript = Script mempty
+      $  "let fs = require('fs');"
+      <> "let jsdom = require('jsdom');" 
+--      <> ("fs.readFile('" <> (pack fp) <> "', function(err, text) {")
+      <> "const rLoader = new jsdom.ResourceLoader({ strictSSL: false, userAgent: \"Mozilla/5.0 (X11; Linux x86_64; rv:84.0) Gecko/20100101 Firefox/84.0\",});"
+      <> "const virtualConsole = new jsdom.VirtualConsole();"
+      <> "virtualConsole.sendTo(console, { omitJSDOMErrors: false });"
+      <> "let options = { runScripts: \"dangerously\", resources: rLoader, virtualConsole};"
+--      <> "let dom = new jsdom.JSDOM(text, { runScripts: \"dangerously\", resources: rLoader, virtualConsole});"
+      <> "jsdom.JSDOM.fromURL(\"" <> (pack url) <> "\", options).then(document =>"
+      <> js
+      <> (pack ['\n'])
+      <> "console.log('!@#$%^&*()');" -- seperate result: is sufficiently unlikely to occur 
+      <> "console.log(dom.serialize());"
+      <> ")"
+
+
+
 scripts = scrape (el "script" []) html
 
 -- | I could also use stream editing to fix variable names if i have to in order to

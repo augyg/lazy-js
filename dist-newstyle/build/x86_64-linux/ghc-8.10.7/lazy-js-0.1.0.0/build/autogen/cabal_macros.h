@@ -50,6 +50,36 @@
   (major1) == 3 && (major2) <  1 || \
   (major1) == 3 && (major2) == 1 && (minor) <= 14)
 #endif /* MIN_VERSION_parsec */
+/* package process-1.6.13.2 */
+#ifndef VERSION_process
+#define VERSION_process "1.6.13.2"
+#endif /* VERSION_process */
+#ifndef MIN_VERSION_process
+#define MIN_VERSION_process(major1,major2,minor) (\
+  (major1) <  1 || \
+  (major1) == 1 && (major2) <  6 || \
+  (major1) == 1 && (major2) == 6 && (minor) <= 13)
+#endif /* MIN_VERSION_process */
+/* package template-haskell-2.16.0.0 */
+#ifndef VERSION_template_haskell
+#define VERSION_template_haskell "2.16.0.0"
+#endif /* VERSION_template_haskell */
+#ifndef MIN_VERSION_template_haskell
+#define MIN_VERSION_template_haskell(major1,major2,minor) (\
+  (major1) <  2 || \
+  (major1) == 2 && (major2) <  16 || \
+  (major1) == 2 && (major2) == 16 && (minor) <= 0)
+#endif /* MIN_VERSION_template_haskell */
+/* package temporary-1.3 */
+#ifndef VERSION_temporary
+#define VERSION_temporary "1.3"
+#endif /* VERSION_temporary */
+#ifndef MIN_VERSION_temporary
+#define MIN_VERSION_temporary(major1,major2,minor) (\
+  (major1) <  1 || \
+  (major1) == 1 && (major2) <  3 || \
+  (major1) == 1 && (major2) == 3 && (minor) <= 0)
+#endif /* MIN_VERSION_temporary */
 /* package text-1.2.4.1 */
 #ifndef VERSION_text
 #define VERSION_text "1.2.4.1"
@@ -70,6 +100,16 @@
   (major1) == 0 && (major2) <  5 || \
   (major1) == 0 && (major2) == 5 && (minor) <= 6)
 #endif /* MIN_VERSION_transformers */
+/* package which-0.2 */
+#ifndef VERSION_which
+#define VERSION_which "0.2"
+#endif /* VERSION_which */
+#ifndef MIN_VERSION_which
+#define MIN_VERSION_which(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  2 || \
+  (major1) == 0 && (major2) == 2 && (minor) <= 0)
+#endif /* MIN_VERSION_which */
 
 /* tool gcc-10.3.0 */
 #ifndef TOOL_VERSION_gcc

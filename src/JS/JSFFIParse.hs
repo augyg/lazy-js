@@ -16,7 +16,7 @@ import JS.Types (Name)
 import JS.Source
 import JS.MonadJS
 
-import Control.Applicative (some, liftA2)
+import Control.Applicative (some, liftA2, empty )
 import Text.Parsec
 import Data.Map (Map)
 import Data.Text (Text)
@@ -182,32 +182,37 @@ type RefChain a = [Ref' a] -- f(1).x(2).y AND `name`
 --                   -- Can actually be a Expr, Class or Function
 --                   -- but cannot be IF, Switch, TryExcept, or Loop
 
-What if instead we had
+--What if instead we had
 
-data Object = Function' (Function a)
-            | Class {-todo:make-}
-            | Operation (JSOperation a)
+data Object a = Function' (Function a)
+              | Class {-todo:make-}
+              | Operation (JSOperation a)
+              
+data Control a = While (WhileLoop a)
+               | For {-todo:(ForLoop a) -}
+               | IF
+               | Switch
+               | TryExcept 
+               -- | Return 
 
-data Control = While (WhileLoop a)
-             | For {-todo:(ForLoop a) -}
-             | IF
-             | Switch
-             | TryExcept 
-             | Return 
+data JSTopLevel a = Control' (Control a)
+                  | Declare (Object a)
+                  | Return (Object a)
+
 
             
-data JSTopLevel = Object' Object@( Function' | Class | Operation(cuz var) )
-                  | Control ( While | For | Switch | TryExcept )
-                  | Return Object 
+-- data JSTopLevel = Object' Object@( Function' | Class | Operation(cuz var) )
+--                   | Control ( While | For | Switch | TryExcept )
+--                   | Return Object 
 
 -- | This implies:
-data Script' = Script' [JSTopLevel]
+data Script' a = Script' [JSTopLevel a]
 -- | Which thus implies maybe I should just make the Num a => a, a Float
 --- AND
 -- | This implies: we could do for space efficiency:
 data ScriptRaw = ScriptRaw [(Dependency, RawJS)] -- where type RawJS = JS
 -- | AND implies:
-newtype ScriptWriter m a = ScriptWriter { unScriptWriter :: WriterT Script' m a }
+newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script' num) m a }
 -- runScriptWriter has access to a node path
                 
 --data Statement = Statement [Dependency] (Maybe Name) JS
@@ -235,42 +240,130 @@ jsTopLevelStatement = undefined
 
 type InFnScope = Bool
 
-data WhileLoop a = WhileLoop Condition [Dependency] [JSTopLevel a]
-whileLoop :: Stream s m Char => InFnScope -> ParsecT s u m (WhileLoop a) 
-whileLoop = do
-  (try normal) <|> doWhile
-    where
+returnStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
+returnStatement = undefined
 
-      normal = do
-        string "while"
-        headExpr <- between1 (char '(') (char ')') jsExpression
-        statements :: _ <- between' (char '{') (char '}') jsStatement
-        -- pure $ While headExpr statements statements
-        pure ()
+allowedStatementControl :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (JSTopLevel a)
+allowedStatementControl inFnScope =
+  mReturnStatement 
+  <|> (Declare <$> (jsFunction <|> jsClass <|> (Operation <$> (jsOperation undefined))))
+  <|> (Control' <$> (control inFnScope))
+  where 
+    mReturnStatement = if inFnScope
+                       then (returnStatement)
+                       else empty
+    
+    control inFnScope =
+      whileLoop inFnScope
+      <|> forLoop inFnScope
+      <|> switchStatement inFnScope
+      <|> tryExcept inFnScope
+      <|> ifStatement inFnScope 
+
+    jsFunction = undefined -- for now
+
+-- data Object a = Function' (Function a)
+--               | Class {-todo:make-}
+--               | Operation (JSOperation a)
+              
+-- data Control a = While (WhileLoop a)
+--                | For {-todo:(ForLoop a) -}
+--                | IF
+--                | Switch
+--                | TryExcept 
+--                -- | Return 
+
+-- data JSTopLevel a = Control' (Control a)
+--                   | Object' (Object a)
+--                   | Return (Object a)
+
+
+-- grabDeps :: [JSTopLevel a] -> [Dependency]
+-- grabDeps = 
+
+
+-- | ******
+-- | NOTE that while we do gather all deps, we could still in theory, step through a loop
+-- | or perform partial evaluation although I'm not sure that would be super useful
+-- | Although this may be useful for a conditional (including try except) 
+
+-- | Regarding above: (******)
+-- | We could definitely customize how we evaluate non-loops
+-- | (i mean we could run the control flow for loops too but like is there a motive?)
+-- |
+-- | Although could we do this in the context of a function? given return statements
+      -- > We could fake this, like so:
+
+--       let statements = []
+
+--       function() { writeStatements statements } -- then we can have a return statement
+
+-- BEFORE:
+-- if (cond1) {
+--   return 1 
+-- }
+
+-- AFTER:
+-- if (cond1) {
+--    (function() { return 1 }) () 
+-- }
+
+
+-- Syntactically valid still and returns same result
+
+-- Although we'd need to make sure our flow assigns this to the right variable
+
+-- I suppose we could say that if cond1 == True then we will forsure run all these statements ((upto return))
+
+-- runControl :: Control -> Maybe (Returned a)
+
+
+  
+   
+
+
+data IFStatement a = IFStatement [(Condition, [JSTopLevel a])]
+ifStatement inFnScope = undefined
+tryExcept inFnScope = undefined
+switchStatement inFnScope = undefined
+whileLoop inFnScope = undefined
+
+data WhileLoop a = WhileLoop Condition [Dependency] [JSTopLevel a]
+-- whileLoop :: Stream s m Char => InFnScope -> ParsecT s u m (WhileLoop a) 
+-- whileLoop inFnScope = do
+--   (try normal) -- <|> doWhile
+--   where    
+--     normal = do
+--       string "while"
+--       headExpr <- between1 (char '(') (char ')') jsExpression
+--       statements :: _ <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+--       --let deps = filterDeps 
+--       -- pure $ While headExpr statements statements
+--       pure ()
       
 
-      doWhile = do
-        string "do"
-        statements <- between' (char '{') (char '}') jsStatement
-        optional $ char '\n'
-        string "while"
-        many (char ' ')
-        headExpr <- between1 (char '(') (char ')') jsExpression
-        pure $ While headExpr (getFromStatements statements) statements
+    -- doWhile = do
+    --   string "do"
+    --   statements <- between' (char '{') (char '}') $ allowedStatementControl inFnScope 
+    --   optional $ char '\n'
+    --   string "while"
+    --   many (char ' ')
+    --   headExpr <- between1 (char '(') (char ')') jsExpression
+    --   pure $ While headExpr (getFromStatements statements) statements
 
 
 
-returnStatement :: Stream s m Char => 
 
 
-whileLoopInFn =
-  returnStatement
-  <|> whileLoopInFn
-  <|> forLoopInFn
-  <|> function -- i think this would just be normal cuz we aren't specially looking for the return statement for
-               -- the current scope
-  <|> ifStatementInLoop
-  <|> caseStatementInLoop 
+
+-- whileLoopInFn =
+--   returnStatement
+--   <|> whileLoopInFn
+--   <|> forLoopInFn
+--   <|> function -- i think this would just be normal cuz we aren't specially looking for the return statement for
+--                -- the current scope
+--   <|> ifStatementInLoop
+--   <|> caseStatementInLoop 
 
 
 
@@ -308,7 +401,7 @@ whileLoopInFn =
 -- | Arg is just meant to represent names for special scopes, not args passed in a statement
 data ArgName a = ArgName Name | ArgDef Name (JSValue a)
 --data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSStatement] (Maybe (Return a))
-data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel] 
+data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel a] 
 
 -- | 
 -- Function
@@ -316,36 +409,37 @@ data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel]
 --data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
 --( __f__ <|> __fT2__ <|> fT3 )(tuple)
 --NOTE a function doesn't need all arguments to run and if it cannot compute the return value -> undefined
-jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
-jsFunction = do
-  -- In general, I dont think this should call jsTopLevel but rather some (maybe all) of the same parsers
-  -- that JS top level would and add a case via eitherP that allows matching on a return statement
-  -- that is treated as a special case only for this parser
-  -- NOTE: for now it's fine that most parsers will be undefined such as loops
-  --
-  -- NOTE: This could also define a function inside it, which has it's own returnStatement (nesting) 
-  anonArrow <|> normalFunc
-  where
-    returnStatement = undefined
-    fnLoops = undefined -- validloopStatementTopLevels <|> returnStatement
-    fnCaseStatement = -- valdCaseStatementTopLevels <|> returnStatement 
+-- jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
+-- jsFunction = do
+--   -- In general, I dont think this should call jsTopLevel but rather some (maybe all) of the same parsers
+--   -- that JS top level would and add a case via eitherP that allows matching on a return statement
+--   -- that is treated as a special case only for this parser
+--   -- NOTE: for now it's fine that most parsers will be undefined such as loops
+--   --
+--   -- NOTE: This could also define a function inside it, which has it's own returnStatement (nesting) 
+--   anonArrow <|> normalFunc
+--   where
+--     returnStatement = undefined
+--     fnLoops = undefined -- validloopStatementTopLevels <|> returnStatement
+--     fnCaseStatement = undefined -- valdCaseStatementTopLevels <|> returnStatement 
     
-    anonArrow = do
+--     anonArrow = do
+--       undefined
       
     
-    normalFunc = do
-      (fnName, args) <- functionHead
-      (bodyStatements, deps) <- functionBody args
-      pure $ Function (Just fnName) args deps bodyStatements
-      where
-        functionHead = do
-          string "function"
-          mFnName <- optionMaybe jsValidName
-          args <- jsArgTuple
-          pure (mFnName, args) 
+--     normalFunc = do
+--       (fnName, args) <- functionHead
+--       (bodyStatements, deps) <- functionBody args
+--       pure $ Function (Just fnName) args deps bodyStatements
+--       where
+--         functionHead = do
+--           string "function"
+--           mFnName <- optionMaybe jsValidName
+--           args <- jsArgTuple
+--           pure (mFnName, args) 
 
-        functionBody headArgs = do
-          between' (char '{') (char '}') $ (jsTopLevelStatement headArgs <|> returnStatement)
+--         functionBody headArgs = do
+--           between' (char '{') (char '}') $ (jsTopLevelStatement headArgs <|> returnStatement)
             
 
 
@@ -512,7 +606,7 @@ jsOperation dependencies = do
   pure $ JSOperation deps mName expr
 
 -- | NOTE!!! This and all loops can have a return statement if they are inside a function
-whileLoop = undefined
+--whileLoop = undefined
 
 forLoop = undefined
 objectDeclaration = undefined
@@ -741,7 +835,7 @@ execJS = do undefined
 ---------HIGHLIGHTS - Mayve Compilable ?--------------------------------------------------------------------------
 
 data Statement = Statement [Dependency] (Maybe Name) JS
-data JSStatement' = WhileLoop [Dependency] RawJS
+data JSStatement' = WhileLoop' [Dependency] RawJS
      		 | ForLoop [Dependency] RawJS -- note that multiple 'lets' could be used
 		 | CaseStatement (Map Condition RawJS) -- would also need ?: syntax 
 		 | Function'' Name RawJS
