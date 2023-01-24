@@ -53,6 +53,63 @@ eval (JSOperation deps mName expr) = do
       -- we want to parse the log for the name using runJSWithCli
     
 
+{ x=3; x=y; x +=1 ; z = x }
+
+x is 3
+x is y
+x is (y + 1)
+z is x at this step
+
+
+I could demand for some reason (based on domain) to evaluate z (for example, lets say z :: XMLHTTPRequest)
+
+I could pile up lazy evaluations by:
+
+  A) copy the thunk from x @ this time
+  B) Establishing two updates:
+      1) Set
+      2) Modify
+    where a Set clears house / destroys all previous updates
+       -> This is assuming that if something did set itself to (a previous value | expr(prevValue) )
+          they've already copied
+
+
+Wait a minute, if expressions are the complicating factor, could they not copy the input values at this time
+
+
+eg:
+
+  let x = f(y) -- then copy y at the time of the this line ... i guess f could change too
+
+  or we create a de-refd statement
+
+  so the let x is now:
+
+  let x = (function (y') { return 1 + y' })(10) -- y=10 @ time
+
+  but we never run this function unless we
+    A) Demand its value for an effect
+    B) Demand a value which refs x before x is destructively updated
+
+     eg. (with x as above)
+
+     g = x; x = undefined; u = x
+
+     then:
+        g = (function (y') { return 1 + y' })(10) -- == 11 
+        u = undefined
+
+
+   And note: these dont relate or rely on whether or not we are processing a chunk of control flow
+   rather one control flow yields a set of statements
+
+   And note: var is the only of the three variable declarators that can actually destructively change
+
+   And note: (let x = x + 1) !== (x += 1) and you cant use += on a const 
+
+
+
+
 
 -- | Falls back to Nix if it cannot find the path
 -- | Compilation will fail if this does 
@@ -61,6 +118,8 @@ nodePath = $(recover (staticWhichNix "node") (staticWhich "node"))
 
 runNodeJS :: Script -> IO JSVal 
 runNodeJS = runJSWithCli 
+
+
 
 
 type DependencyScript = Text
