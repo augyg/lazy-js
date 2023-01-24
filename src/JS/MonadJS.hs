@@ -10,6 +10,53 @@ import JS.Source
 import JS.Types (JSVal, Name)
 
 
+{-
+
+Idea:
+  regarding functions and generally things which hold multiple javascript statements
+
+
+  we could just note that these N variables have been affected from this <scope> being called
+
+  so if in the course of the function for global variable t we say:
+
+  t += 1
+
+  We add this to the stack held in t
+
+  and only when we need t for some reason (doesn't have to necessarily be side effects but some particular
+  statement (we could force some expressions to be strict)(maybe we also keep track of tree size and
+  fold ops when we reach a certain threshold)(even just by forcing the execution of all new commands) 
+
+  This also means I will need to have the concept of a dependency denote the Nth step
+
+  Although it may be ridiculously memory heavy to keep track of all steps in case we want to use one based
+
+  on an old value. We can deref this tho by saying
+
+  "X depends on Y4 and Z depends on Y7" -> SO compute Y4 -> Compute X, Then continue (and do the same for Z
+  if another value depends on Y11"
+
+  Although I wonder if we could do something like combine Ops so that we delete all the steps that are never asked
+
+  like the script:
+
+  let x = 3
+  let z = x
+
+  x +=1 -- x2
+  x +=2 -- x3 
+
+  x += 10 --x4
+
+  let y = x -- x5
+
+  So only x1 and x5 are subscribed -> therefore, could we not merge 2->5
+
+-}
+
+
+
 type Html = String 
 
 class MonadJS m where
