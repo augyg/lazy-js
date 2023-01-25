@@ -29,6 +29,12 @@ import Control.Monad.Trans.Writer
 --   letJS name value
 --   withJS [name1, name2] $ \(x:x2) -> 
 
+sspace :: Stream s m Char => ParsecT s u m [Char]
+sspace = many (char ' ') 
+
+
+inSpace :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a
+inSpace p = sspace *> p <* sspace
 
 
 testVarString = "var ue_id = 'WEBRWTDQ8PSAD8KS77XA'"
@@ -103,7 +109,7 @@ jsValue =
   <|> (String' <$> jsString)
   <|> (Null <$> jsNull)
   <|> (Boolean <$> jsBool)
-  -- <|> jsArray
+  -- <|> jsArray -- NOTE: this can be lazy cuz the parser will be lazy 
   -- <|> jsObject
   -- <|> jsTuple 
 
@@ -182,23 +188,6 @@ type RefChain a = [Ref' a] -- f(1).x(2).y AND `name`
 --                   -- Can actually be a Expr, Class or Function
 --                   -- but cannot be IF, Switch, TryExcept, or Loop
 
---What if instead we had
-
-data Object a = Function' (Function a)
-              | Class {-todo:make-}
-              | Operation (JSOperation a)
-              
-data Control a = While (WhileLoop a)
-               | For {-todo:(ForLoop a) -}
-               | IF
-               | Switch
-               | TryExcept 
-               -- | Return 
-
-data JSTopLevel a = Control' (Control a)
-                  | Declare (Object a)
-                  | Return (Object a)
-
 
             
 -- data JSTopLevel = Object' Object@( Function' | Class | Operation(cuz var) )
@@ -240,11 +229,38 @@ jsTopLevelStatement = undefined
 
 type InFnScope = Bool
 
+
+
+
+--What if instead we had
+
+-- | For control ones, we don't need or even want to know dependencies at this level
+-- | For Functions and Classes we do special scoping where when we check dependencies
+-- | We first check if the function defined the var name
+  -- | And prefer the innermost scope (for multiple functions)
+  -- | (function (x) { var x = 2; return ((function(x){return x})(10))})(1) ---> Returns 10 NOT(2,1)
+  -- | `this` is a synonym for the outer object (?)
+  
+data JSTopLevel a = Control' (Control a)
+                  | Declare (Object a)
+                  | Return (Object a) -- Weird case
+              
+data Control a = While (WhileLoop a)
+               | For (ForLoop a){-todo:(ForLoop a) -}
+               | IF (IFStatement a)
+               | Switch
+               | TryExcept 
+               -- | Return 
+
+data Object a = Function' (Function a)
+              | Class {-todo:make-}
+              | Operation (JSOperation a)
+
 returnStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
 returnStatement = undefined
 
 allowedStatementControl :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (JSTopLevel a)
-allowedStatementControl inFnScope =
+allowedStatementControl inFnScope =  
   mReturnStatement 
   <|> (Declare <$> (jsFunction <|> jsClass <|> (Operation <$> (jsOperation undefined))))
   <|> (Control' <$> (control inFnScope))
@@ -252,15 +268,147 @@ allowedStatementControl inFnScope =
     mReturnStatement = if inFnScope
                        then (returnStatement)
                        else empty
-    
+
+    control :: (Fractional a, Read a, Stream s m Char) => Bool -> ParsecT s u m (Control a)
     control inFnScope =
-      whileLoop inFnScope
-      <|> forLoop inFnScope
+      (While <$> whileLoop inFnScope)
+      <|> (For <$> forLoop inFnScope)
       <|> switchStatement inFnScope
       <|> tryExcept inFnScope
-      <|> ifStatement inFnScope 
+      <|> (IF <$> ifStatement inFnScope )
 
     jsFunction = undefined -- for now
+
+
+data ForLoop a = ForLoop (Maybe (JSOperation a), (Condition a, [Dependency]), Maybe (JSOperation a)) [JSTopLevel a]
+forLoop :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (ForLoop a)
+forLoop inFnScope = do
+  triplet <- forHead
+  topLevels <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+  -- NOTE: the topLevels may contain the iterator and the control var may be set before the loop
+  pure $ ForLoop triplet topLevels
+  where
+    forHead = do
+      inSpace $ char '('
+      mControlVariable <- optionMaybe $ jsOperation undefined
+      inSpace $ char ';'
+      exitCondition <- jsExpression
+      inSpace $ char ';'
+      mIterator <- optionMaybe $ jsOperation undefined -- probably gonna opt not to pass anyways 
+      inSpace $ char ')'
+      pure (mControlVariable, exitCondition, mIterator) 
+    
+    forIn = undefined -- for (key in object) -- Specifically object 
+    forOf = undefined -- for (variable of iterable) -- Specifically iterables
+  
+ 
+-- | Syntax
+-- if (condition1) {
+--   //  block of code to be executed if condition1 is true
+-- } else if (condition2) {
+--   //  block of code to be executed if the condition1 is false and condition2 is true
+-- } else {
+--   //  block of code to be executed if the condition1 is false and condition2 is false
+-- }
+-- | Control is in the haskell context and expression is in the JS context 
+data IFStatement a = IFStatement [(Condition a, [JSTopLevel a])] -- in order 
+ifStatement :: Stream s m Char => InFnScope -> ParsecT s u m (IFStatement a)
+ifStatement inFnScope =  undefined
+  -- -- definitely an if clause
+  -- -- many else if clauses
+  -- -- once no more else if's, maybe an else
+  -- ifClause
+  -- -- many elseIf
+  -- -- maybeElse
+  -- where
+  --   expression = inSpace (char '(')  *> jsExpression <* inSpace (char ')')
+    
+  --   ifClause = undefined
+    
+  
+
+  
+
+tryExcept inFnScope = undefined
+switchStatement inFnScope = undefined
+--whileLoop inFnScope = undefined
+
+data WhileLoop a = WhileLoop (Condition a, [Dependency]) [JSTopLevel a]
+whileLoop :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (WhileLoop a) 
+whileLoop inFnScope = do
+  (try normal) <|> doWhile
+  where    
+    normal = do
+      string "while"
+      headExpr <- between1 (char '(') (char ')') jsExpression
+      statements <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+      pure $ WhileLoop headExpr statements
+    
+    doWhile = do
+      string "do"
+      statements <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+      optional $ char '\n'
+      string "while"
+      many (char ' ')
+      headExpr <- between1 (char '(') (char ')') jsExpression
+      pure $ WhileLoop headExpr statements
+
+-- | Arg is just meant to represent names for special scopes, not args passed in a statement
+data ArgName a = ArgName Name | ArgDef Name (JSValue a)
+--data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSStatement] (Maybe (Return a))
+data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel a] 
+
+-- | 
+-- Function
+-- Bracket <+> Function <+> Bracket <+> ArgTuple 
+--data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
+-- ( __f__ <|> __fT2__ <|> fT3 )(tuple)
+-- NOTE a function doesn't need all arguments to run and if it cannot compute the return value -> undefined
+-- jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
+-- jsFunction = do
+--   -- In general, I dont think this should call jsTopLevel but rather some (maybe all) of the same parsers
+--   -- that JS top level would and add a case via eitherP that allows matching on a return statement
+--   -- that is treated as a special case only for this parser
+--   -- NOTE: for now it's fine that most parsers will be undefined such as loops
+--   --
+--   -- NOTE: This could also define a function inside it, which has it's own returnStatement (nesting) 
+--   anonArrow <|> normalFunc
+--   where
+--     returnStatement = undefined
+--     fnLoops = undefined -- validloopStatementTopLevels <|> returnStatement
+--     fnCaseStatement = undefined -- valdCaseStatementTopLevels <|> returnStatement 
+    
+-- --     anonArrow = do
+-- --       undefined
+      
+    
+--     normalFunc = do
+--       (fnName, args) <- functionHead
+--       (bodyStatements, deps) <- functionBody args
+--       pure $ Function (Just fnName) args deps bodyStatements
+--       where
+--         functionHead = do
+--           string "function"
+--           mFnName <- optionMaybe jsValidName
+--           args <- jsArgTuple
+--           pure (mFnName, args) 
+
+--         functionBody headArgs = do
+--           between' (char '{') (char '}') $ (jsTopLevelStatement headArgs <|> returnStatement)
+            
+
+
+-- | 
+-- anonFunc = do
+--   arrowSyntax
+--   <|> functionWithName
+--   <|> functionWithOutName
+--   <|> if with brackets, may be followed by an arg tuple 
+
+
+
+
+
 
 -- data Object a = Function' (Function a)
 --               | Class {-todo:make-}
@@ -316,31 +464,6 @@ allowedStatementControl inFnScope =
 -- I suppose we could say that if cond1 == True then we will forsure run all these statements ((upto return))
 
 -- runControl :: Control -> Maybe (Returned a)
-
-
-  
-   
-
-
-data IFStatement a = IFStatement [(Condition, [JSTopLevel a])]
-ifStatement inFnScope = undefined
-tryExcept inFnScope = undefined
-switchStatement inFnScope = undefined
-whileLoop inFnScope = undefined
-
-data WhileLoop a = WhileLoop Condition [Dependency] [JSTopLevel a]
--- whileLoop :: Stream s m Char => InFnScope -> ParsecT s u m (WhileLoop a) 
--- whileLoop inFnScope = do
---   (try normal) -- <|> doWhile
---   where    
---     normal = do
---       string "while"
---       headExpr <- between1 (char '(') (char ')') jsExpression
---       statements :: _ <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
---       --let deps = filterDeps 
---       -- pure $ While headExpr statements statements
---       pure ()
-      
 
     -- doWhile = do
     --   string "do"
@@ -398,60 +521,6 @@ data WhileLoop a = WhileLoop Condition [Dependency] [JSTopLevel a]
 
 
 
--- | Arg is just meant to represent names for special scopes, not args passed in a statement
-data ArgName a = ArgName Name | ArgDef Name (JSValue a)
---data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSStatement] (Maybe (Return a))
-data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel a] 
-
--- | 
--- Function
--- Bracket <+> Function <+> Bracket <+> ArgTuple 
---data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
---( __f__ <|> __fT2__ <|> fT3 )(tuple)
---NOTE a function doesn't need all arguments to run and if it cannot compute the return value -> undefined
--- jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
--- jsFunction = do
---   -- In general, I dont think this should call jsTopLevel but rather some (maybe all) of the same parsers
---   -- that JS top level would and add a case via eitherP that allows matching on a return statement
---   -- that is treated as a special case only for this parser
---   -- NOTE: for now it's fine that most parsers will be undefined such as loops
---   --
---   -- NOTE: This could also define a function inside it, which has it's own returnStatement (nesting) 
---   anonArrow <|> normalFunc
---   where
---     returnStatement = undefined
---     fnLoops = undefined -- validloopStatementTopLevels <|> returnStatement
---     fnCaseStatement = undefined -- valdCaseStatementTopLevels <|> returnStatement 
-    
---     anonArrow = do
---       undefined
-      
-    
---     normalFunc = do
---       (fnName, args) <- functionHead
---       (bodyStatements, deps) <- functionBody args
---       pure $ Function (Just fnName) args deps bodyStatements
---       where
---         functionHead = do
---           string "function"
---           mFnName <- optionMaybe jsValidName
---           args <- jsArgTuple
---           pure (mFnName, args) 
-
---         functionBody headArgs = do
---           between' (char '{') (char '}') $ (jsTopLevelStatement headArgs <|> returnStatement)
-            
-
-
--- | 
--- anonFunc = do
---   arrowSyntax
---   <|> functionWithName
---   <|> functionWithOutName
---   <|> if with brackets, may be followed by an arg tuple 
-
-
-
 -- Anything which can be named 
 data Expr a = Val (JSValue a)
             | Reference [Ref' a] -- decl. function app and/or object reference
@@ -463,6 +532,10 @@ data Expr a = Val (JSValue a)
             -- note that f is not defined 
              
 --data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
+
+
+jsBracketed :: ParsecT s u m ()
+jsBracketed = undefined
 
 
 -- as this recurses, we will need to add dependencies
@@ -594,8 +667,16 @@ data Operator = Multiply
               | XORB
               | Shift String 
 
+-- | Is an Operation as expressed to an expression because of 
+jsIterator :: Stream s m Char => ParsecT s u m (JSOperation a)
+jsIterator = undefined
+  -- should include both
+  -- i++
+  -- i+=<VAL>
 
 -- | This is an Expression which may be named
+-- | TODO(galen): iterators
+-- | TODO(galen): obj.newField = <VAL>
 data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 jsOperation :: (Fractional a, Read a, Stream s m Char) => dependencies  -> ParsecT s u m (JSOperation a)
 jsOperation dependencies = do
@@ -608,7 +689,7 @@ jsOperation dependencies = do
 -- | NOTE!!! This and all loops can have a return statement if they are inside a function
 --whileLoop = undefined
 
-forLoop = undefined
+--forLoop = undefined
 objectDeclaration = undefined
   -- basically just properties where you can have functions
 
@@ -627,15 +708,6 @@ objectDeclaration = undefined
 --       -- pure $ While headExpr statements statements
 --       pure ()
       
-
---     doWhile = do
---       string "do"
---       statements <- between' (char '{') (char '}') jsStatement
---       optional $ char '\n'
---       string "while"
---       many (char ' ')
---       headExpr <- between1 (char '(') (char ')') jsExpression
---       pure $ While headExpr (getFromStatements statements) statements
 
 
       
@@ -836,8 +908,8 @@ execJS = do undefined
 
 data Statement = Statement [Dependency] (Maybe Name) JS
 data JSStatement' = WhileLoop' [Dependency] RawJS
-     		 | ForLoop [Dependency] RawJS -- note that multiple 'lets' could be used
-		 | CaseStatement (Map Condition RawJS) -- would also need ?: syntax 
+     		 | ForLoop' [Dependency] RawJS -- note that multiple 'lets' could be used
+--		 | CaseStatement (Map Condition RawJS) -- would also need ?: syntax 
 		 | Function'' Name RawJS
 		 | ObjectDeclaration Name RawJS
 		 | Exec JSExpression -- in current top level as raw statement, no assignment
@@ -848,7 +920,8 @@ type RawJS = JS
 
 type Dependency = Name
 
-data Condition = Condition RawJS
+type Condition a = Expr a
+--data Condition = Condition RawJS
 
 -- this is derived from stream editing 
 data JSExpression = JSExpr [Dependency] RawJS 
