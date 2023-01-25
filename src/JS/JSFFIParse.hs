@@ -16,131 +16,20 @@ import JS.Types (Name)
 import JS.Source
 import JS.MonadJS
 
+import JS.JSFFIParse.Value
+import JS.JSFFIParse.Combinators
+
 import Control.Applicative (some, liftA2, empty )
 import Text.Parsec
 import Data.Map (Map)
 import Data.Text (Text)
 import Data.List (intercalate)
 
--- faked, not really in use yet
-import Control.Monad.Trans.Writer 
-
--- do
---   letJS name value
---   withJS [name1, name2] $ \(x:x2) -> 
-
-sspace :: Stream s m Char => ParsecT s u m [Char]
-sspace = many (char ' ') 
-
-
-inSpace :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a
-inSpace p = sspace *> p <* sspace
-
-
 testVarString = "var ue_id = 'WEBRWTDQ8PSAD8KS77XA'"
 
 -- test1 = parse (jsVarName >> jsString ) "" testVarString
 -- test3 = parse (jsVarName >> jsBool ) "" "var ue_navtiming = true"
 -- test4 = parse (jsVarName >> jsNull ) "" "var ue_navtiming = null"
-
-between' :: Stream s m Char => ParsecT s u m open -> ParsecT s u m end -> ParsecT s u m a -> ParsecT s u m [a]
-between' open close inside = do
-  open
-  (x, _) <- manyTill_ inside close
-  pure x
- 
-
-jsVarName :: Stream s m Char => ParsecT s u m Name 
-jsVarName = do
-  (try $ string "let ") <|> (try $ string "var ") <|> (try $ string "const ")
-  many (char ' ')
-  name <- jsValidName 
-  manyTill_ (char ' ') (char '=')
-  many (char ' ')
-  pure name
-
-
-jsString :: Stream s m Char => ParsecT s u m JSString
-jsString = do
-  str <- between' (char '\'') (char '\'') anyChar <|> (between' (char '\"') (char '\"') anyChar) 
-  pure $ JSString str
-
-data Fractional a => JSNumber a = JSNumber a deriving (Show, Eq, Ord)  
-jsNumber :: (Num a, Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSNumber a)
-jsNumber = do
-  whole <- some digit
-  decii <- option "" $ do
-    dot <- char '.'
-    decimal <- some digit
-    pure (dot : decimal) 
-
-  pure . JSNumber $ read (whole <> decii)
-
-
-data JSBool = JSBool Bool deriving (Show, Eq, Ord)
-jsBool :: Stream s m Char => ParsecT s u m JSBool
-jsBool = JSBool <$> ((True <$ string "true" ) <|> (False <$ string "false"))
-
-data JSNull = JSNull deriving (Show, Eq, Ord)
-jsNull :: Stream s m Char => ParsecT s u m JSNull
-jsNull = JSNull <$ string "null"
-
-manyTill_ :: ParsecT s u m a -> ParsecT s u m end -> ParsecT s u m ([a], end)
-manyTill_ p end = go
-  where
-    go = (([],) <$> end) <|> liftA2 (\x (xs, y) -> (x : xs, y)) p go
-
-jsValidName :: Stream s m Char => ParsecT s u m Name 
-jsValidName = do
-  first <- letter <|> (char '_') <|> (char '-') 
-  rest <- some $ alphaNum <|> (char '_') <|> (char '-')
-  pure $ first : rest
-
-data Fractional a => JSValue a = Number (JSNumber a)
-                               | String' JSString
-                               | Null JSNull
-                               | Boolean JSBool
-             -- | Tuple [JSValue]
-             -- | Array [JSValue] 
-
-jsValue :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSValue a)
-jsValue = 
-  (Number <$> jsNumber)
-  <|> (String' <$> jsString)
-  <|> (Null <$> jsNull)
-  <|> (Boolean <$> jsBool)
-  -- <|> jsArray -- NOTE: this can be lazy cuz the parser will be lazy 
-  -- <|> jsObject
-  -- <|> jsTuple 
-
-
-      
-
-
-
-between1 :: Stream s m Char => ParsecT s u m open -> ParsecT s u m end -> ParsecT s u m a -> ParsecT s u m a 
-between1 open end match = open *> match <* end
-
-
-
-
-  
-
-parseCallsWith :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, [(Expr a, [Dependency])])
-parseCallsWith = do
-  refdName <- jsValidName
-  args <- option [] jsArgTupleInput
-  pure (refdName, args) 
-  -- where
-    
-  --   jsArgTuple :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [(Expr a, [Dependency])]
-  --   jsArgTuple = do
-  --     char '(' *> sepBy jsExpression (char ',') <* char ')'
-
-    
-jsArgTupleInput :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [(Expr a, [Dependency])]
-jsArgTupleInput = do
-  char '(' *> sepBy jsExpression (char ',') <* char ')'
 
 jsArgTuple :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [ArgName a]
 jsArgTuple = do
@@ -157,10 +46,6 @@ jsArgTuple = do
 
     jsArgName = ArgName <$> jsValidName
       
-
-data DotRef a = Property Name | Fn (Function a) 
-data Ref' a = Prop Name | FnCall Name [(Expr a, [Dependency])] --(Function a)
-type RefChain a = [Ref' a] -- f(1).x(2).y AND `name` 
 
 -- data JSStatement' = WhileLoop [Dependency] RawJS
 --      		  | ForLoop [Dependency] RawJS -- note that multiple 'lets' could be used
@@ -193,16 +78,6 @@ type RefChain a = [Ref' a] -- f(1).x(2).y AND `name`
 -- data JSTopLevel = Object' Object@( Function' | Class | Operation(cuz var) )
 --                   | Control ( While | For | Switch | TryExcept )
 --                   | Return Object 
-
--- | This implies:
-data Script' a = Script' [JSTopLevel a]
--- | Which thus implies maybe I should just make the Num a => a, a Float
---- AND
--- | This implies: we could do for space efficiency:
-data ScriptRaw = ScriptRaw [(Dependency, RawJS)] -- where type RawJS = JS
--- | AND implies:
-newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script' num) m a }
--- runScriptWriter has access to a node path
                 
 --data Statement = Statement [Dependency] (Maybe Name) JS
 
@@ -520,16 +395,6 @@ data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel a]
 
 
 
-
--- Anything which can be named 
-data Expr a = Val (JSValue a)
-            | Reference [Ref' a] -- decl. function app and/or object reference
-            | Op Operator (Expr a) (Expr a) --(RefChain a)
-            | AnonFunc (Function a)
-            | ApplyFunc (Function a) [Expr a]
-            | New Name [Expr a]
-            -- var a = function f(x) { ... }
-            -- note that f is not defined 
              
 --data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
 
@@ -538,90 +403,9 @@ jsBracketed :: ParsecT s u m ()
 jsBracketed = undefined
 
 
--- as this recurses, we will need to add dependencies
--- | Actually this is only named expressions: for and while cannot be in this named context
-jsExpression :: (Fractional a, Read a, Stream s m Char) => {-Maybe Name ->-} ParsecT s u m ((Expr a), [Dependency])
-jsExpression = do
-  -- TODO(galen): OR this can just be a function and anonymous function: var x = function(x){}
-  (try objectInstantiation) <|> (try $ coerciblyAnonFunc) <|> arithmeticExpression
-
-  where
-    -- coercibly becuase the name is not available 
-    coerciblyAnonFunc = do
-      -- in the case
-      undefined
-
-        -- has a dependency by default 
-    objectInstantiation = do
-      string "new"
-      many (char ' ')
-      nameRefd <- jsValidName
-      argsAndDeps <- jsArgTupleInput
-      pure $ (New nameRefd (fmap fst argsAndDeps), nameRefd : (mconcat $ fmap snd argsAndDeps))
-
-    arithmeticExpression = do 
-  
-      (expr,deps) <- whnfValue
-      many (char ' ')
-      mComp <- (Nothing <$ oneOf ['\n', ';']) <|> (Just <$> do
-                                                      combinator <- someOperator
-                                                      many (char ' ') 
-                                                      exprANDdep <- jsExpression
-                                                      pure (combinator, exprANDdep)
-                                                  )
-      case mComp of
-        Nothing -> pure (expr, deps)
-        Just (combinator, (expr2,deps2)) -> pure (Op combinator expr expr2, deps <> deps2)
-    
-  
-    whnfValue = (,[]) <$> (Val <$> jsValue)
-                <|> existingConstructRef
-
-    
-    existingConstructRef :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m ((Expr a), [Dependency])
-    existingConstructRef = do -- Reference <$> (sepBy (name <|> nameWithArgs) (char '.'))
-      (refs, deps) <- unzip <$> (sepBy (name <|> nameWithArgs) (char '.'))
-      pure (Reference $ refs, mconcat deps)
-        where
-          name = do
-            n <- jsValidName
-            pure (Prop n, [n]) 
-          nameWithArgs = do
-            (n, argExprWithDeps) <- parseCallsWith
-            pure $ (FnCall n argExprWithDeps, mconcat $ fmap snd argExprWithDeps) 
-
     
 
 
-
-someOperator :: Stream s m Char => ParsecT s u m Operator
-someOperator =
-  (Multiply <$ (string "*"))
-  <|> (Plus <$ (string "+"))
-  <|> (Subtract <$ (string "-"))
-  <|> (Exponentiation <$ (string "**"))
-  <|> (Division <$ (string "/"))
-  <|> (Modulo <$ (string "%"))
-  <|> (Equal <$ (string "=="))
-  <|> (EqualSameType <$ (string "==="))
-  <|> (NotEqual <$ (string "!="))
-  <|> (NotEqualOrNotSameType <$ (string "!=="))
-  <|> (GreaterThan <$ (string ">"))
-  <|> (LessThan <$ (string "<"))
-  <|> (LessOrEqual <$ (string "<="))
-  <|> (GreaterOrEqual <$ (string ">="))
-  <|> (Ternary <$ (string "?"))
-  <|> (AND <$ (string "&&"))
-  <|> (OR <$ (string "||"))
-  <|> (NOT <$ (string "!")) -- Should i make the second Expr a Maybe Expr? I may have to
-  <|> (ANDB <$ (string "&"))
-  <|> (ORB <$ (string "|"))
-  <|> (NOTB <$ (string "~"))
-  <|> (XORB <$ (string "^"))
-  <|> (Shift <$> shift)
-  where
-    shift = (try $ string ">>") <|> (try $ string "<<") <|> (try $ string ">>>")
-  
   
       
 
@@ -633,58 +417,6 @@ someOperator =
 --     combinator <- someOperator
 --     someValueWHNF <- jsOperation
     
-
-type Expr' a = (Expr a, [Dependency])
---data [] a = [] | a : []
---data Op = Op Operator Expr' Expr'
--- TODO(galen): combine with Expr so that this can be a recursively defined type
-  -- OpConstructor Operator Op Op 
-
-
-
--- Note that these can literally pair with any two JS Values 
-data Operator = Multiply
-              | Plus
-              | Subtract
-              | Exponentiation
-              | Division
-              | Modulo
-              | Equal -- (==)
-              | EqualSameType  -- (===)
-              | NotEqual
-              | NotEqualOrNotSameType
-              | GreaterThan
-              | LessThan
-              | LessOrEqual
-              | GreaterOrEqual
-              | Ternary -- ? ~~ isTrue
-              | AND
-              | OR
-              | NOT
-              | ANDB
-              | ORB
-              | NOTB
-              | XORB
-              | Shift String 
-
--- | Is an Operation as expressed to an expression because of 
-jsIterator :: Stream s m Char => ParsecT s u m (JSOperation a)
-jsIterator = undefined
-  -- should include both
-  -- i++
-  -- i+=<VAL>
-
--- | This is an Expression which may be named
--- | TODO(galen): iterators
--- | TODO(galen): obj.newField = <VAL>
-data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
-jsOperation :: (Fractional a, Read a, Stream s m Char) => dependencies  -> ParsecT s u m (JSOperation a)
-jsOperation dependencies = do
-  mName <- optionMaybe jsVarName -- todo: assignment operators -- TODO multiple vars per var keyword
-  (expr, deps) <- jsExpression  
-  -- | Either followed by ; or \n
-  -- | oneOf ['\n', ';']
-  pure $ JSOperation deps mName expr
 
 -- | NOTE!!! This and all loops can have a return statement if they are inside a function
 --whileLoop = undefined
@@ -916,9 +648,9 @@ data JSStatement' = WhileLoop' [Dependency] RawJS
 		 | VarAssign Name JSExpression -- this could be an empty expression 
 		 | Iterator 
 
-type RawJS = JS
 
-type Dependency = Name
+
+
 
 type Condition a = Expr a
 --data Condition = Condition RawJS
@@ -942,7 +674,7 @@ data ExprPiece = ExprPiece String
 --    where assignmentOperator = char '='
 --                             <|> (otherOperator >> (char '='))
 
-data JSString = JSString String deriving (Show, Eq, Ord)
+
 data JSTuple = JSTuple [JSString] 
 
 

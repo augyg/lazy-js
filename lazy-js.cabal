@@ -29,11 +29,17 @@ extra-source-files:  README.MD
 library
 
   exposed-modules:    JS.JS
-                      JS.JSFFIParse
                       JS.MonadJS
                       JS.Run
                       JS.Source
                       JS.Types
+                      JS.JSFFIParse
+                      JS.JSFFIParse.Combinators
+                      JS.JSFFIParse.Value
+                      JS.JSFFIParse.Expr
+                      JS.JSFFIParse.Operation
+                      
+                      
   build-depends:       base
                      , parsec
                      , containers

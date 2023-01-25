@@ -6,8 +6,14 @@ import Data.Aeson
 import qualified Data.Map as M
 import Data.Text 
 
+import JS.JSFFIParse.Expr
 import JS.Source
 import JS.Types (JSVal, Name)
+
+
+
+-- faked, not really in use yet
+import Control.Monad.Trans.Writer 
 
 
 {-
@@ -118,3 +124,13 @@ type JSError = String
 -----------------------------------------------------------------------------
 
 
+
+-- | JSTopLevel datatype implies:
+data Script' a = Script' [JSTopLevel a]
+-- | Which thus implies maybe I should just make the Num a => a, a Float
+--- AND
+-- | This implies: we could do for space efficiency:
+data ScriptRaw = ScriptRaw [(Dependency, RawJS)] -- where type RawJS = JS
+-- | AND implies:
+newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script' num) m a }
+-- runScriptWriter has access to a node path

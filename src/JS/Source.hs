@@ -19,7 +19,7 @@ instance Semigroup Script where
 instance Monoid Script where
   mempty = Script mempty mempty 
 
-
+type RawJS = JS
 newtype JS = JS { unJS :: Text }
 
 instance Semigroup JS where
