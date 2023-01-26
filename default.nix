@@ -3,7 +3,7 @@
 , lens, lib, megaparsec, modern-uri, mtl, parallel, parsec
 , replace-megaparsec, stm, text, time, transformers, webdriver
 , witherable, jsaddle, which, pkgs, raw-strings-qq, MissingH, nodejs
-, cabal-install
+, cabal-install, these
 }:
 let
   # TODO(galen): figure out if these even matter or just nodejs or something 
@@ -20,7 +20,7 @@ let
   # };
 in 
 mkDerivation {
-  pname = "scrappy";
+  pname = "lazy-js";
   version = "0.1.0.4";
   src = ./.; 
   libraryHaskellDepends = [
@@ -28,7 +28,7 @@ mkDerivation {
     http-client http-client-tls http-types lens megaparsec modern-uri
     mtl parallel parsec replace-megaparsec stm text time transformers
     webdriver witherable jsaddle which
-    raw-strings-qq MissingH
+    raw-strings-qq MissingH these
     # nodejs
     # nodeDeps
     

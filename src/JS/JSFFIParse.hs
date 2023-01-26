@@ -18,6 +18,7 @@ import JS.MonadJS
 
 import Control.Applicative (some, liftA2, empty )
 import Text.Parsec
+import Data.These
 import Data.Map (Map)
 import Data.Text (Text)
 import Data.List (intercalate)
@@ -25,9 +26,113 @@ import Data.List (intercalate)
 -- faked, not really in use yet
 import Control.Monad.Trans.Writer 
 
+
+
+
+
+{-
+TODOS:
+
+https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Lexical_grammar
+
+-- Investigate possibility of just getting Firefox JavaScript API source code
+   -- and just processing like any other source code 
+
+-- | Break
+"The break statement breaks out of a switch or a loop."  break <OPTIONAL:labelname>;
+list: {
+  text += cars[0] + "<br>";
+  text += cars[1] + "<br>";
+  text += cars[2] + "<br>";
+  break list;
+  text += cars[3] + "<br>";
+}
+-- |
+
+-- | TODO(galen): Condition comes packaged with the [Dependency]
+-- TODO(galen): OR this can just be a function and anonymous function: var x = function(x){}
+-- | TODO(galen): iterators
+-- | TODO(galen): obj.newField = <VAL>
+--  todo: assignment operators
+-- TODO multiple vars per var keyword
+
+-- Spacing for expressions
+
+-- TopLevels and operations ending with  (\n | ' ') 
+
+-- Simplify JSValue, Object(re-name to ObjectOriented), maybe control
+  -- + all nums are just Float
+
+-- Condition carries deps as well 
+
+-- Array, Object
+
+-- Differentiate between const, var, let (see in JS.Run)
+
+-- Validate that return can be in switch inside fn
+
+-- Throw keyword (other keywords?)
+-- TODO(galen): add throw as an expression (or maybe operation) option
+
+-- Run module gets err from stderr for use in catch block 
+
+-- if statements can instead just be followed by throw:
+   --> eg: if(x < 5) throw "is too low";
+   --> EDIT: by any keyword
+
+-- Comments
+  -- // , block /* */(unaffected by newlines)
+  -- #!/usr/bin/env node
+
+-- Labels:
+  --> lbl: console.log(1); // Label
+
+-- Scientific numbers, Numeric separators
+
+-- Should I do "fuck it" JSOperation case where I just run it as a raw string? cuz i cant interpret it
+   -- could set up logging system to write the failed case
+   -- if 99% of the cases are handled then so what 
+
+-}
+
+
+reservedKeywordsTODO = [ "break"
+                       , "return"
+                       , "goto"
+                       , "continue"
+                       , "throw"
+                       , "export" -- ?
+                       , "delete"
+                       -- On experimentation: this only works for classes not objects
+                       , {-classes-} mconcat ["instanceof","extends", "this", "static","implements"
+                                             ]
+                       -- 
+                       , "import"
+                       -- AND
+                       , "from" -- import from 
+                       ---
+                       , "in" -- + for .. in ...
+                       , "of"
+                       , "typeof" -- typeof 1 | typeof(1)
+                       , "void"
+                       , "async"
+                       , "arguments" -- arguments[n] gets nth arg of calling functionx
+                       ]
+
+
+
 -- do
 --   letJS name value
 --   withJS [name1, name2] $ \(x:x2) -> 
+
+
+type RawJS = JS
+
+type Dependency = Name
+
+type Condition a = Expr a
+--data Condition = Condition RawJS
+
 
 sspace :: Stream s m Char => ParsecT s u m [Char]
 sspace = many (char ' ') 
@@ -131,11 +236,6 @@ parseCallsWith = do
   refdName <- jsValidName
   args <- option [] jsArgTupleInput
   pure (refdName, args) 
-  -- where
-    
-  --   jsArgTuple :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [(Expr a, [Dependency])]
-  --   jsArgTuple = do
-  --     char '(' *> sepBy jsExpression (char ',') <* char ')'
 
     
 jsArgTupleInput :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [(Expr a, [Dependency])]
@@ -161,38 +261,6 @@ jsArgTuple = do
 data DotRef a = Property Name | Fn (Function a) 
 data Ref' a = Prop Name | FnCall Name [(Expr a, [Dependency])] --(Function a)
 type RefChain a = [Ref' a] -- f(1).x(2).y AND `name` 
-
--- data JSStatement' = WhileLoop [Dependency] RawJS
---      		  | ForLoop [Dependency] RawJS -- note that multiple 'lets' could be used
--- 		  | CaseStatement (Map Condition RawJS) -- would also need ?: syntax 
--- 		  | Function' Name RawJS
--- 		  | ObjectDeclaration Name RawJS
--- 		  | Exec JSExpression -- in current top level as raw statement, no assignment
--- 		  | VarAssign Name JSExpression -- this could be an empty expression 
--- 		  | Iterator 
-
-
-
--- | All of these pieces are mutually recursive in that they may contain each other
--- | For Function and Class: definitions dont escape scope
--- data JSTopLevel a = Function' 
---                   -- Contains: all 
---                   | While (WhileLoop a)
---                   | For
---                   | Class
---                   | Operation -- rename Exec
---                   | Switch
---                   | IF
---                   | TryExcept
---                   | Return (Expr a)
---                   -- Can actually be a Expr, Class or Function
---                   -- but cannot be IF, Switch, TryExcept, or Loop
-
-
-            
--- data JSTopLevel = Object' Object@( Function' | Class | Operation(cuz var) )
---                   | Control ( While | For | Switch | TryExcept )
---                   | Return Object 
 
 -- | This implies:
 data Script' a = Script' [JSTopLevel a]
@@ -244,12 +312,15 @@ type InFnScope = Bool
 data JSTopLevel a = Control' (Control a)
                   | Declare (Object a)
                   | Return (Object a) -- Weird case
-              
+                  | Break -- another weird case
+
+-- throw, return, break 
+                  
 data Control a = While (WhileLoop a)
                | For (ForLoop a){-todo:(ForLoop a) -}
                | IF (IFStatement a)
-               | Switch
-               | TryExcept 
+               | Switch (SwitchStatement a)
+               | TryExcept (TryExceptFinally a)
                -- | Return 
 
 data Object a = Function' (Function a)
@@ -273,8 +344,8 @@ allowedStatementControl inFnScope =
     control inFnScope =
       (While <$> whileLoop inFnScope)
       <|> (For <$> forLoop inFnScope)
-      <|> switchStatement inFnScope
-      <|> tryExcept inFnScope
+      <|> (Switch <$> switchStatement inFnScope)
+      <|> (TryExcept <$> tryExceptFinally inFnScope)
       <|> (IF <$> ifStatement inFnScope )
 
     jsFunction = undefined -- for now
@@ -310,27 +381,126 @@ forLoop inFnScope = do
 -- } else {
 --   //  block of code to be executed if the condition1 is false and condition2 is false
 -- }
--- | Control is in the haskell context and expression is in the JS context 
-data IFStatement a = IFStatement [(Condition a, [JSTopLevel a])] -- in order 
-ifStatement :: Stream s m Char => InFnScope -> ParsecT s u m (IFStatement a)
-ifStatement inFnScope =  undefined
-  -- -- definitely an if clause
-  -- -- many else if clauses
-  -- -- once no more else if's, maybe an else
-  -- ifClause
-  -- -- many elseIf
-  -- -- maybeElse
-  -- where
-  --   expression = inSpace (char '(')  *> jsExpression <* inSpace (char ')')
+-- | Control is in the haskell context and expression is in the JS context
+
+-- | TODO(galen): Condition comes packaged with the [Dependency]
+data IFStatement a = IFStatement [((Condition a, [Dependency]), [JSTopLevel a])] -- in order 
+ifStatement :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (IFStatement a)
+ifStatement inFnScope = do
+  if' <- ifClause
+  elseifs <- many elseif
+  else' <- option [] $ (:[]) <$> maybeElse
+
+  pure $ IFStatement $ if' : elseifs <> else'
+  -- Else is not labelled specially since we can just assume it's true
+  where
+    expression = inSpace (char '(')  *> jsExpression <* inSpace (char ')')
+    block = between' (char '{') (char '}') $ allowedStatementControl inFnScope
     
-  --   ifClause = undefined
+    ifClause = do
+      inSpace $ string "if" 
+      e <- expression
+      topLevels <- block
+      pure (e, topLevels)
+
+    elseif = do
+      inSpace $ string "else if"
+      e <- expression
+      topLevels <- block
+      pure (e, topLevels)
+
+    maybeElse = do
+      inSpace $ string "else"
+      (((Val (Boolean (JSBool True))),[]),) <$> block
     
+-- | Syntax  
+-- switch(expression) {
+--   case x:
+--     // code block
+--     break;
+--   case y:
+--     // code block
+--     break;
+--   default:
+--     // code block
+-- }
+type DefaultCase a = Maybe [JSTopLevel a] 
+data SwitchStatement a = SwitchStatement (Expr a, [Dependency]) [(JSValue a, [JSTopLevel a])] (DefaultCase a)
+switchStatement :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (SwitchStatement a)
+switchStatement inFnScope = do
+  -- blocks must end with break EXCEPT For default
+  -- May not even give a fuck about 'break' here, just toss it, and make Break specifically for loop control
+  inSpace $ string "switch"
+  expr <- inSpace $ between1 (char '(') (char ')') jsExpression
+  char '{'
+  cases <- many caseBlocks
+  mDef <- optionMaybe default' 
+  char '}'
+
+  pure $ SwitchStatement expr cases mDef
+  where
+    caseBlocks = do
+      v <- inSpace (string "case") *> jsValue <* char ':'
+      optional (char '\n')
+      tlstmts <- many $ allowedStatementControl inFnScope
+      pure (v, tlstmts)  
+
+    --default' :: Stream s m Char => ParsecT s u m [JSTopLevel a]
+    default' = do
+      inSpace (string "default") >> char ':'
+      optional (char '\n')
+      tlstmts <- many $ allowedStatementControl inFnScope
+      pure tlstmts
+      -- and there's essentially an optional newline char 
+
+-- | I guess when I do runSwitchStatement I should just check for Break statements 
+
+-- | Combinator for expecting at least one of two things next 
+parseThese :: Stream s m Char => ParsecT s u m this -> ParsecT s u m that -> ParsecT s u m (These this that)
+parseThese this that = do
+  mThis <- optionMaybe this
+  mThat <- optionMaybe that
+  case mThis of
+    Just this -> case mThat of
+      Just that -> pure $ These this that
+      Nothing -> pure $ This this 
+    Nothing -> case mThat of
+      Just likeThat -> pure $ That likeThat
+      Nothing -> parserFail "neither found of These" 
   
 
+-- | Must be run with runJSWithCliErr (although we might as well use this for all) 
+-- | IMPORTANTE!!! All try excepts should be strict for the try block
+type TryBlock a = [JSTopLevel a]
+type Catch a = (Maybe Dependency, [JSTopLevel a]) -- dependency is the err name
+type Finally a = [JSTopLevel a]
+type CatchFinally a = These (Catch a) (Finally a)
+data TryExceptFinally a = TryExceptFinally (TryBlock a) (CatchFinally a)
+tryExceptFinally :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (TryExceptFinally a)
+tryExceptFinally inFnScope = do
+  -- Seems that you must have at least one of the two of catch or finally and try is demanded
   
+  TryExceptFinally <$> tryBlock <*> (parseThese catchBlock finallyBlock)
+  where
+    -- TODO(galen): add throw as an expression (or maybe operation) option 
+    
+    tryBlock = do
+      inSpace $ string "try"
+      between' (char '{') (char '}') $ allowedStatementControl inFnScope <* (optional $ char '\n')
+      
 
-tryExcept inFnScope = undefined
-switchStatement inFnScope = undefined
+    catchBlock = do
+      inSpace $ string "catch"
+      mDep <- optionMaybe $ between1 (char '(') (char ')') jsValidName 
+      stmts <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+      pure (mDep, stmts)
+
+    finallyBlock = do
+      inSpace $ string "finally"
+      between' (char '{') (char '}') $ allowedStatementControl inFnScope 
+      
+      
+
 --whileLoop inFnScope = undefined
 
 data WhileLoop a = WhileLoop (Condition a, [Dependency]) [JSTopLevel a]
@@ -361,25 +531,25 @@ data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel a]
 -- | 
 -- Function
 -- Bracket <+> Function <+> Bracket <+> ArgTuple 
---data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
+-- data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
 -- ( __f__ <|> __fT2__ <|> fT3 )(tuple)
--- NOTE a function doesn't need all arguments to run and if it cannot compute the return value -> undefined
--- jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
--- jsFunction = do
---   -- In general, I dont think this should call jsTopLevel but rather some (maybe all) of the same parsers
---   -- that JS top level would and add a case via eitherP that allows matching on a return statement
---   -- that is treated as a special case only for this parser
---   -- NOTE: for now it's fine that most parsers will be undefined such as loops
---   --
---   -- NOTE: This could also define a function inside it, which has it's own returnStatement (nesting) 
+--NOTE a function doesn't need all arguments to run and if it cannot compute the return value -> undefined
+jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
+jsFunction = undefined -- do
+  -- In general, I dont think this should call jsTopLevel but rather some (maybe all) of the same parsers
+  -- that JS top level would and add a case via eitherP that allows matching on a return statement
+  -- that is treated as a special case only for this parser
+  -- NOTE: for now it's fine that most parsers will be undefined such as loops
+  --
+  -- NOTE: This could also define a function inside it, which has it's own returnStatement (nesting) 
 --   anonArrow <|> normalFunc
 --   where
 --     returnStatement = undefined
 --     fnLoops = undefined -- validloopStatementTopLevels <|> returnStatement
 --     fnCaseStatement = undefined -- valdCaseStatementTopLevels <|> returnStatement 
     
--- --     anonArrow = do
--- --       undefined
+-- -- --     anonArrow = do
+-- -- --       undefined
       
     
 --     normalFunc = do
@@ -681,9 +851,11 @@ data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 jsOperation :: (Fractional a, Read a, Stream s m Char) => dependencies  -> ParsecT s u m (JSOperation a)
 jsOperation dependencies = do
   mName <- optionMaybe jsVarName -- todo: assignment operators -- TODO multiple vars per var keyword
-  (expr, deps) <- jsExpression  
+  (expr, deps) <- jsExpression
   -- | Either followed by ; or \n
   -- | oneOf ['\n', ';']
+  -- | and only here; this doesnt apply to top levels with {} (although it may apply to return and break)
+  sspace >> (char '\n' <|> char ';')
   pure $ JSOperation deps mName expr
 
 -- | NOTE!!! This and all loops can have a return statement if they are inside a function
@@ -915,13 +1087,6 @@ data JSStatement' = WhileLoop' [Dependency] RawJS
 		 | Exec JSExpression -- in current top level as raw statement, no assignment
 		 | VarAssign Name JSExpression -- this could be an empty expression 
 		 | Iterator 
-
-type RawJS = JS
-
-type Dependency = Name
-
-type Condition a = Expr a
---data Condition = Condition RawJS
 
 -- this is derived from stream editing 
 data JSExpression = JSExpr [Dependency] RawJS 

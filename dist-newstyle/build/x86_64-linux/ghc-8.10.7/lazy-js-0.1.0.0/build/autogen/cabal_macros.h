@@ -90,6 +90,16 @@
   (major1) == 1 && (major2) <  2 || \
   (major1) == 1 && (major2) == 2 && (minor) <= 4)
 #endif /* MIN_VERSION_text */
+/* package these-1.1.1.1 */
+#ifndef VERSION_these
+#define VERSION_these "1.1.1.1"
+#endif /* VERSION_these */
+#ifndef MIN_VERSION_these
+#define MIN_VERSION_these(major1,major2,minor) (\
+  (major1) <  1 || \
+  (major1) == 1 && (major2) <  1 || \
+  (major1) == 1 && (major2) == 1 && (minor) <= 1)
+#endif /* MIN_VERSION_these */
 /* package transformers-0.5.6.2 */
 #ifndef VERSION_transformers
 #define VERSION_transformers "0.5.6.2"

@@ -20,9 +20,10 @@ import Data.Maybe (catMaybes)
 import qualified Data.Map as M
 import Data.Text (Text, pack, unpack, intercalate)
 import System.Which
-import System.Process (CreateProcess(..), proc, readCreateProcess)
+import System.Process (CreateProcess(..), proc, readCreateProcess, readCreateProcessWithExitCode)
 import System.IO (hFlush)
 import System.IO.Temp (withTempFile)
+import System.Exit (ExitCode)
 import Data.Text.IO (hPutStr)
 
 data Link = Link Text -- TODO(galen): delete
@@ -88,17 +89,31 @@ data Link = Link Text -- TODO(galen): delete
 -}
 
 
+type DepExpr a = (Expr a, [Dependency])
+
 testEval = do
   x <- eval (JSOperation [] (Just "x") (Val (Boolean (JSBool True))))
   print $ (\(Boolean (JSBool y)) -> y) x
 
 -- | Control is in the haskell context and expression is in the JS context 
 
+-- | IMPORTANTE!!! All try excepts should be strict for the try block
+
+-- | IMPORTANTE!!! Why dont i have a function runJSFunction :: MonadJS m => ReaderT [ArgName] m () 
+
+-- | Run abstraction will have layers
+  -- | 1. runControlFlow (topLevel) 
+  -- | 2. runOperation (in the eventual case of JSOperation)
+
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 eval :: {-MonadJS m =>-} JSOperation a -> IO (JSValue n) -- could also be an Expr
 eval (JSOperation deps mName expr) = do
+  let
+    deRef :: ((Expr a), [Dependency]) -> Expr a
+    deRef = undefined
+
   case mName of
-    Nothing -> undefined
+    Nothing -> undefined deRef
       -- just check if any global vars are affected I think, also may be able to just toss
       -- and then return undefined but most likely if this is the context then we are using a
       -- browser API or console.log / some pre-defined object
@@ -126,6 +141,7 @@ runNodeJS = runJSWithCli
 
 
 
+
 type DependencyScript = Text
 type TargetExpr = Text 
 runJS :: [DependencyScript] -> TargetExpr -> IO JSVal 
@@ -144,6 +160,16 @@ runJSWithCli (Script _ script) = do
     hPutStr handle $ script
     hFlush handle 
     readCreateProcess (proc nodePath [fp]) []
+
+
+type StdErr = String 
+runJSWithCliErr :: Script -> IO (ExitCode, JSVal, StdErr)
+runJSWithCliErr (Script _ script) = do
+  withTempFile "." "index.js" $ \fp handle -> do
+    print $ "fp:" <> fp
+    hPutStr handle $ script
+    hFlush handle 
+    readCreateProcessWithExitCode (proc nodePath [fp]) []
 
 
 jsStdOutParser :: Stream s m Char => ParsecT s u m (Html, [JSVal]) 
