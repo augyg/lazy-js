@@ -99,11 +99,45 @@ testEval = do
 
 -- | IMPORTANTE!!! All try excepts should be strict for the try block
 
--- | IMPORTANTE!!! Why dont i have a function runJSFunction :: MonadJS m => ReaderT [ArgName] m () 
+-- | IMPORTANTE!!! Why dont i have a function runJSFunction :: MonadJS m => ReaderT [ArgName] m ()
+  -- | OR!
+    -- this takes the AST, adds the args to it, creating a new one, which deletes the args once the
+    -- scope is escaped
 
 -- | Run abstraction will have layers
   -- | 1. runControlFlow (topLevel) 
   -- | 2. runOperation (in the eventual case of JSOperation)
+
+-- | eval (general) -> evalCONTROL -> purify Expr >>= evalPureOp { runJSWithCliErr } -> modify (\AST -> ..); continue
+
+
+-- | IMPORTANTE!!! Variable declarations only escape scope of control statements (except functions,classes)
+-- |               when they have 'var <name>' NOT const or let
+
+
+
+
+-- Inner scopes have access to all outer scopes, but the variables CREATED in the context of inner scopes
+-- conditionally escape
+  -- global keyword (or is that python)?
+  -- 'var' from control {}bracket 
+
+-- | Note: the only statement which we actually run is A value or Pure Expression
+-- | and therefore, these are the only things we need to console.log() and parse
+-- | and therefore, the only thing we need to parse is values
+-- |
+-- | Consider the edge cases of `return function() {..}` or `return class A{..}`
+-- | By our models of running, we will have parsed these into haskell types and then why would we need
+-- | to retrieve via console.log? We can understand all JS instructions, just not how JS decides on output
+-- | from expressions
+-- |
+-- | This also suggests that how we should handle return is to set the namespace to the Object
+-- | we could make this straightforward by having it be a case statement:
+  -- Function -> ...
+  -- Object -> ...
+  -- Class -> ...
+  -- Expression -> ...
+-- | So that we may neatly sort it into our tree
 
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 eval :: {-MonadJS m =>-} JSOperation a -> IO (JSValue n) -- could also be an Expr
@@ -138,9 +172,11 @@ nodePath = $(recover (staticWhichNix "node") (staticWhich "node"))
 runNodeJS :: Script -> IO JSVal 
 runNodeJS = runJSWithCli 
 
+data JSPure a = Val' (JSValue a)
+              | Op Operator (JSPure a) (JSPure a)
 
-
-
+toPure :: (Expr a, [Dependency]) -> m (JSPure a )
+toPure = undefined
 
 type DependencyScript = Text
 type TargetExpr = Text 

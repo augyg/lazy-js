@@ -1,7 +1,8 @@
 {-# LANGUAGE ForeignFunctionInterface, JavaScriptFFI #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE ScopedTypeVariables #-} 
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase #-} 
 
 {-|
 Known Exceptions:
@@ -120,6 +121,9 @@ reservedKeywordsTODO = [ "break"
                        ]
 
 
+-- | NOTE: return, break, throw, all end their respective control flows
+  -- | maybe this is a pattern worth noticing and building around somehow
+
 
 -- do
 --   letJS name value
@@ -155,16 +159,6 @@ between' open close inside = do
   pure x
  
 
-jsVarName :: Stream s m Char => ParsecT s u m Name 
-jsVarName = do
-  (try $ string "let ") <|> (try $ string "var ") <|> (try $ string "const ")
-  many (char ' ')
-  name <- jsValidName 
-  manyTill_ (char ' ') (char '=')
-  many (char ' ')
-  pure name
-
-
 jsString :: Stream s m Char => ParsecT s u m JSString
 jsString = do
   str <- between' (char '\'') (char '\'') anyChar <|> (between' (char '\"') (char '\"') anyChar) 
@@ -195,18 +189,14 @@ manyTill_ p end = go
   where
     go = (([],) <$> end) <|> liftA2 (\x (xs, y) -> (x : xs, y)) p go
 
-jsValidName :: Stream s m Char => ParsecT s u m Name 
-jsValidName = do
-  first <- letter <|> (char '_') <|> (char '-') 
-  rest <- some $ alphaNum <|> (char '_') <|> (char '-')
-  pure $ first : rest
 
 data Fractional a => JSValue a = Number (JSNumber a)
                                | String' JSString
                                | Null JSNull
                                | Boolean JSBool
-             -- | Tuple [JSValue]
-             -- | Array [JSValue] 
+                               -- | Tuple [JSValue]
+                               -- | Array [JSValue]
+                               | JSUndefined
 
 jsValue :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSValue a)
 jsValue = 
@@ -260,6 +250,12 @@ jsArgTuple = do
 
 data DotRef a = Property Name | Fn (Function a) 
 data Ref' a = Prop Name | FnCall Name [(Expr a, [Dependency])] --(Function a)
+-- | New Idea:
+data FnCall' a = FnCall' Name  [(Expr a, [Dependency])]
+data ObjectRef'' a = Ref'' [Name] (Maybe (FnCall' a))
+-- | New Idea:
+data JSRef = TopLevelRef | ObjectRef 
+-- | Although maybe FnCall should be it's own thing 
 type RefChain a = [Ref' a] -- f(1).x(2).y AND `name` 
 
 -- | This implies:
@@ -277,6 +273,8 @@ newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script'
 
 --jsOperation = jsStatement
 
+
+-- | All the control flows which take a Bool should be set to False 
 jsTopLevelStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
 jsTopLevelStatement = undefined
 -- -- | Any top level piece that must be run altogether for actual use and desired behavior
@@ -293,6 +291,43 @@ jsTopLevelStatement = undefined
 --   <|> objectDeclaration -- https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes
 --   <|> (jsOperation undefined)
 
+-- | TEST: with JSDOM object
+
+-- PLACEHOLDER
+type Method = String -- Function
+data JSClass a = JSClass [ArgName a] [Method]
+jsClass :: Stream s m Char => ParsecT s u m (JSClass a)
+jsClass = do
+  -- Need to deal with `this` if im gonna go deref way
+     -- Note that objects mean even more stateful interactions
+
+  -- Verified: methods will share state
+    -- I guess considering that there are such things as globals and that we have a system for dealing with
+    -- them, this is something we can easily handle with a trick
+
+  -- (this.propertyA | class=MyClass )--> VARNAME : MyClass_propertyA
+  -- OR we can just store as object: a new type
+
+  className <- inSpace (string "class") *> jsValidName <* sspace 
+  char '{'
+  mConstructor
+  many methodWithMaybeClassPrefixes
+  char '}'
+  where
+    mConstructor = undefined
+    methodWithMaybeClassPrefixes = undefined
+
+
+-- -- | Specifically for LHS of '='    
+-- innerPropValue = do
+  
+
+
+-- | This is actually recursive:
+-- | Object [("name", Object [("name2", "1")])] --> name.name2 = 1
+type ObjectName = Name -- of the whole thing, top reference
+data ObjectDataType a = Object'' ObjectName (Map Name (Either (JSValue a) (Expr a)))
+-- | let x = new SomeClass ()
 
 
 type InFnScope = Bool
@@ -325,7 +360,7 @@ data Control a = While (WhileLoop a)
 
 data Object a = Function' (Function a)
               | Class {-todo:make-}
-              | Operation (JSOperation a)
+              | Operation [JSOperation a] -- TODO make this singular again
 
 returnStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
 returnStatement = undefined
@@ -333,7 +368,7 @@ returnStatement = undefined
 allowedStatementControl :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (JSTopLevel a)
 allowedStatementControl inFnScope =  
   mReturnStatement 
-  <|> (Declare <$> (jsFunction <|> jsClass <|> (Operation <$> (jsOperation undefined))))
+  <|> (Declare <$> (jsFunction <|> jsClass <|> (Operation <$> jsOperation)))
   <|> (Control' <$> (control inFnScope))
   where 
     mReturnStatement = if inFnScope
@@ -351,21 +386,27 @@ allowedStatementControl inFnScope =
     jsFunction = undefined -- for now
 
 
-data ForLoop a = ForLoop (Maybe (JSOperation a), (Condition a, [Dependency]), Maybe (JSOperation a)) [JSTopLevel a]
+-- for (let i = 0; i < 5; i++) {
+--     console.log(i)
+-- }
+
+type ForHead a = (Maybe [JSOperation a], (Condition a, [Dependency]), Maybe [JSOperation a])
+data ForLoop a = ForLoop (ForHead a) [JSTopLevel a]
 forLoop :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (ForLoop a)
 forLoop inFnScope = do
   triplet <- forHead
   topLevels <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
   -- NOTE: the topLevels may contain the iterator and the control var may be set before the loop
-  pure $ ForLoop triplet topLevels
+  pure $ ForLoop triplet topLevels 
   where
     forHead = do
+      inSpace $ string "for" 
       inSpace $ char '('
-      mControlVariable <- optionMaybe $ jsOperation undefined
+      mControlVariable <- optionMaybe jsOperation
       inSpace $ char ';'
       exitCondition <- jsExpression
       inSpace $ char ';'
-      mIterator <- optionMaybe $ jsOperation undefined -- probably gonna opt not to pass anyways 
+      mIterator <- optionMaybe jsOperation  -- probably gonna opt not to pass anyways 
       inSpace $ char ')'
       pure (mControlVariable, exitCondition, mIterator) 
     
@@ -526,7 +567,8 @@ whileLoop inFnScope = do
 -- | Arg is just meant to represent names for special scopes, not args passed in a statement
 data ArgName a = ArgName Name | ArgDef Name (JSValue a)
 --data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSStatement] (Maybe (Return a))
-data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel a] 
+data Function a = Function (Maybe Name) [ArgName a] [JSTopLevel a] 
+-- | Can only put to AST if we have a name for it 
 
 -- | 
 -- Function
@@ -534,38 +576,76 @@ data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSTopLevel a]
 -- data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
 -- ( __f__ <|> __fT2__ <|> fT3 )(tuple)
 --NOTE a function doesn't need all arguments to run and if it cannot compute the return value -> undefined
-jsFunction :: (Fractional a, Stream s m Char) => ParsecT s u m (Function a)
-jsFunction = undefined -- do
+jsFunction :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (Function a)
+jsFunction = do
   -- In general, I dont think this should call jsTopLevel but rather some (maybe all) of the same parsers
   -- that JS top level would and add a case via eitherP that allows matching on a return statement
   -- that is treated as a special case only for this parser
   -- NOTE: for now it's fine that most parsers will be undefined such as loops
   --
   -- NOTE: This could also define a function inside it, which has it's own returnStatement (nesting) 
---   anonArrow <|> normalFunc
---   where
---     returnStatement = undefined
---     fnLoops = undefined -- validloopStatementTopLevels <|> returnStatement
---     fnCaseStatement = undefined -- valdCaseStatementTopLevels <|> returnStatement 
+  normalFunc <|> anonArrow
+  where
+    returnStatement = undefined
+    fnLoops = undefined -- validloopStatementTopLevels <|> returnStatement
+    fnCaseStatement = undefined -- valdCaseStatementTopLevels <|> returnStatement 
     
--- -- --     anonArrow = do
--- -- --       undefined
+    anonArrow = do
+      args <- inSpace $ (((:[]) . (ArgName)) <$> jsValidName) <|> jsArgTuple
+      inSpace $ string "=>"
+      body <- (between' (char '{') (char '}') $ allowedStatementControl True) 
+              <|> (((:[]) . Declare . Operation . (\(e,deps) -> JSOperation deps Nothing e)) <$> jsExpression)
+      pure $ Function Nothing args body
+      
       
     
---     normalFunc = do
---       (fnName, args) <- functionHead
---       (bodyStatements, deps) <- functionBody args
---       pure $ Function (Just fnName) args deps bodyStatements
---       where
---         functionHead = do
---           string "function"
---           mFnName <- optionMaybe jsValidName
---           args <- jsArgTuple
---           pure (mFnName, args) 
+    normalFunc = do
+      (fnName, args) <- functionHead
+      bodyStatements <- functionBody args
+      pure $ Function fnName args bodyStatements
+      where
+        functionHead = do
+          string "function"
+          mFnName <- optionMaybe jsValidName
+          args <- jsArgTuple
+          pure (mFnName, args) 
 
---         functionBody headArgs = do
---           between' (char '{') (char '}') $ (jsTopLevelStatement headArgs <|> returnStatement)
+        functionBody headArgs = do
+          between' (char '{') (char '}') $ allowedStatementControl True 
             
+
+
+
+-- | FOR expression: 
+  -- -- Anything which can be named 
+  -- data Expr a = Val (JSValue a)
+  --             | Reference [Ref' a] -- decl. function app and/or object reference
+  --             | Op Operator (Expr a) (Expr a) --(RefChain a)
+  --             | AnonFunc (Function a)
+  --             | ApplyFunc (Function a) [Expr a]
+  --             | New Name [Expr a]
+  --             -- var a = function f(x) { ... }
+  --             -- note that f is not defined 
+  --
+  -- | Does the jsFunction case suggest that for a given JSOperation, in the case of functions and refs in
+  -- | general that we must "walk" the function to a value?
+    -- | So Op Operator (JSValue a) (JSValue a)
+    -- |
+    -- | because we don't know what effects on globals or side effects exist in the function calls
+  -- |
+  -- | so then we need toPure :: Expr a -> Pure a ; an expression with only logical or mathematical operations
+  --
+  -- | ISSUE #2
+    -- | how do we handle new?
+    -- | I believe I can do a similar thing: convert to an object which has all of the proper functions and
+    -- | properties, including those from super
+    -- |
+    -- | Also important to note that some classes have functions that can be called before initialization
+    -- | This would cause a problem if the script ask `x instanceof <Class>`
+    -- | EDIT: we can do this by setting a static property
+      -- | eg: x.constructor.name
+      -- | and also therfore x.constructor 
+    
 
 
 -- | 
@@ -689,13 +769,34 @@ jsFunction = undefined -- do
 -- then this means x should be undefined
 
 
+-- | PSEUDO!
+data AST = AST (Map Name ObjectType)
+data ObjectType = Function'''
+                | Object' 
+                | NamedValue
+                | ClassDefinition 
+-- | PSEUDO!
+-- | 
 
+-- | Note that for Objects with functions, we have to handle these in a 
 
+data Expr'' a = Val'
+              -- | -- reference turns into val or function 
+              -- |
+
+data ExprRef = Func'      -- -> Add to AST
+             | ApplyFunc' -- -> Get
+             | ObjectNew -- -> Get Class from AST >>= Add to AST 
+             | ObjectRef' -- -> Get from AST, maybe apply? 
+             
+
+-- | Note: If a function is called to set some variable 'y' and that function performs an 'internal'-side-effect
+-- | on some variable 'x', if we run the operation 'let y = somefunc()' then x will receive the effect at this time
 -- Anything which can be named 
 data Expr a = Val (JSValue a)
             | Reference [Ref' a] -- decl. function app and/or object reference
             | Op Operator (Expr a) (Expr a) --(RefChain a)
-            | AnonFunc (Function a)
+            | Func (Function a)
             | ApplyFunc (Function a) [Expr a]
             | New Name [Expr a]
             -- var a = function f(x) { ... }
@@ -713,15 +814,31 @@ jsBracketed = undefined
 jsExpression :: (Fractional a, Read a, Stream s m Char) => {-Maybe Name ->-} ParsecT s u m ((Expr a), [Dependency])
 jsExpression = do
   -- TODO(galen): OR this can just be a function and anonymous function: var x = function(x){}
-  (try objectInstantiation) <|> (try $ coerciblyAnonFunc) <|> arithmeticExpression
+  (try objectInstantiation) <|> (try appliedFunction) <|> (try function) <|> arithmeticExpression
 
   where
-    -- coercibly becuase the name is not available 
-    coerciblyAnonFunc = do
-      -- in the case
-      undefined
+    -- will take on the name parsed by jsOperation
+    -- | Note: this should be impossible to try before 
+    --function :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
+    function = do 
+      -- parse as any func and reduce to anonymous
+      Function _ args topLevels <- jsFunction
+      pure $ (Func $ Function Nothing args topLevels, [])
 
-        -- has a dependency by default 
+    --appliedFunction :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
+    appliedFunction = do 
+      (Func f,_) <- between1 (char '(') (char ')') function
+      input <- between1 (char '(') (char ')') jsArgTupleInput
+      pure $ (ApplyFunc f (fmap fst input), mconcat $ fmap snd input)
+      
+    
+    -- coercibly becuase the name is not available 
+    -- coerciblyAnonFunc = do
+    --   -- in the case
+    --   undefined
+
+        -- has a dependency by default
+    --objectInstantiation :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
     objectInstantiation = do
       string "new"
       many (char ' ')
@@ -729,8 +846,8 @@ jsExpression = do
       argsAndDeps <- jsArgTupleInput
       pure $ (New nameRefd (fmap fst argsAndDeps), nameRefd : (mconcat $ fmap snd argsAndDeps))
 
+    --arithmeticExpression :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
     arithmeticExpression = do 
-  
       (expr,deps) <- whnfValue
       many (char ' ')
       mComp <- (Nothing <$ oneOf ['\n', ';']) <|> (Just <$> do
@@ -844,19 +961,149 @@ jsIterator = undefined
   -- i++
   -- i+=<VAL>
 
+data VarType = Raw -- literally is none (eg: with x as defined obj. : x.r = 1)
+               -- Same behavior as Let
+             | Let
+             | Var
+             | Const
+
+
+
 -- | This is an Expression which may be named
--- | TODO(galen): iterators
+-- | This can and should be viewed as the main interface to creating the AST (and updating in the case of
+-- | iterators)
+-- | TODO: let z; 
+-- | TODO: (let z = class {} --> creates: class z)
+-- | TODO(galen): iterators (eg: x += 1 ) 
 -- | TODO(galen): obj.newField = <VAL>
-data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
-jsOperation :: (Fractional a, Read a, Stream s m Char) => dependencies  -> ParsecT s u m (JSOperation a)
-jsOperation dependencies = do
-  mName <- optionMaybe jsVarName -- todo: assignment operators -- TODO multiple vars per var keyword
-  (expr, deps) <- jsExpression
-  -- | Either followed by ; or \n
-  -- | oneOf ['\n', ';']
-  -- | and only here; this doesnt apply to top levels with {} (although it may apply to return and break)
-  sspace >> (char '\n' <|> char ';')
-  pure $ JSOperation deps mName expr
+  ---data JSOperation a = JSOperation [Dependency] (Maybe [Name]) (Expr a) --JS
+--data JSOperationNEW a = JSOperationNEW [Dependency] (Maybe (VarType, [Name])) (Expr a)
+--data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
+
+-- jsOperation :: (Fractional a, Read a, Stream s m Char) => dependencies  -> ParsecT s u m (JSOperation a)
+-- jsOperation dependencies = do
+--   mName <- optionMaybe jsVarName -- todo: assignment operators -- TODO multiple vars per var keyword
+--   (expr, deps) <- jsExpression
+--   -- | Either followed by ; or \n
+--   -- | oneOf ['\n', ';']
+--   -- | and only here; this doesnt apply to top levels with {} (although it may apply to return and break)
+--   sspace >> (char '\n' <|> char ';')
+--   pure $ JSOperation deps mName expr
+
+
+-- | For context: at toplevel: this is tried last
+jsVarName :: Stream s m Char => ParsecT s u m Name 
+jsVarName = do
+  (try $ string "let ") <|> (try $ string "var ") <|> (try $ string "const ")
+  many (char ' ')
+  name <- jsValidName 
+  manyTill_ (char ' ') (char '=')
+  many (char ' ')
+  pure name
+
+jsValidName :: Stream s m Char => ParsecT s u m Name 
+jsValidName = do
+  first <- letter <|> (char '_') <|> (char '-') 
+  rest <- some $ alphaNum <|> (char '_') <|> (char '-')
+  pure $ first : rest
+
+jsValidRef :: Stream s m Char => ParsecT s u m [Name]
+jsValidRef = sepBy jsValidName (char '.') 
+
+sepBySome p s = f =<< sepBy p s
+  where
+    f = \case
+      [] -> parserFail "no matches"
+      (x:xs) -> pure (x:xs)
+
+-- | This cannot assign Raw as this doesnt parse enough context for that
+-- | that's told by jsOperation
+varType :: Stream s m Char => ParsecT s u m VarType
+varType = 
+  (Let <$ (try $ string "let")) <|> (Var <$ (try $ string "var")) <|> (Const <$ (try $ string "const"))
+
+data JSOperation a = JSOperation [Dependency] (Maybe (VarType, [Name])) (Expr a)
+--data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
+jsOperation :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [JSOperation a]
+jsOperation  = do
+  vType <- optionMaybe varType
+  case vType of
+    Just vType' -> 
+      flip sepBySome (char ',') $ do
+        n <- jsValidName -- NOT jsValidRef; illegal with vartype 
+        (expr,deps) <- option (Val $ JSUndefined,[]) $ (char '=') *> jsExpression
+        pure $ JSOperation deps (Just (vType',[n])) expr
+    Nothing ->
+      -- | TODO: Only in this case could we find iterators
+      -- Only in this case could we find x.y.z..
+         -- Note; that these dont need to exist as long as the parent does 
+      naked <|> nakedExpr
+      where
+        naked = do
+          flip sepBySome (char ',') $ do
+            n <- jsValidRef <* char '=' -- disallows plain expressions
+            {- FOR OTHER non '=' operators:
+                 let o = show operator in expr= <var> o <expr> 
+            -}
+            
+            (expr, deps) <- jsExpression
+            -- Let doesnt escape scope so this is most true
+            pure $ JSOperation deps (Just (Raw, n)) expr
+    
+        nakedExpr = do
+          (expr,deps) <- jsExpression
+          pure $ [JSOperation deps Nothing expr]
+      -- WAIT A MINUTE! Why dont we view this as MAYBE prefixed by (name <* char '=')
+
+    -- NOTE: the only thing that is actually illegal is to do this:
+  -- x ; (where x is not defined)
+  -- LEGAL:
+  -- <let|var> x
+    -- However: const x = <expr> -- expr is required here
+  -- x = <expr>
+  -- <vartype> x = <expr>
+  -- let x,y;  
+
+
+  -- IF no expr -> JSUndefined
+  -- IF no 
+
+  -- maybeVarType
+  -- someSep (do
+  --            name
+  --            option JSUndefined (char '=' >> jsExpression)
+  --
+  -- Except that this could still be a false positive for a plain expression
+
+  -- IF doesNotExists(varType) then we must see an equal sign
+
+  -- FURTHER: the real answer is to check all possibilities of a named expression
+  -- and then accept a non-named expression
+  -- based on scriptTest: "let x={a:1}; x.a" 
+
+
+
+  
+  -- vType <- option Raw varType
+  -- nedList <- someSepBy $ do
+  --   name <- varNameWhereDotsAreAllowed  -- can return 1 or more matches
+  --   char '=' >> jsExpression -- NECESSITY
+  --   (expr,deps) <- 
+  --   pure (name,expr,deps)
+
+  -- pure $ fmap (\(n,e,d) -> JSOperation ) nedList 
+      
+  -- mName <- optionMaybe jsVarName -- todo: assignment operators -- TODO multiple vars per var keyword
+  -- (expr, deps) <- jsExpression
+  -- -- | Either followed by ; or \n
+  -- -- | oneOf ['\n', ';']
+  -- -- | and only here; this doesnt apply to top levels with {} (although it may apply to return and break)
+  -- sspace >> (char '\n' <|> char ';')
+  -- pure $ JSOperation deps mName expr
+
+  
+      
+  
 
 -- | NOTE!!! This and all loops can have a return statement if they are inside a function
 --whileLoop = undefined
@@ -866,6 +1113,7 @@ objectDeclaration = undefined
   -- basically just properties where you can have functions
 
 -- NOTE: Need to make a concept like jsStatement except it 
+
 
 -- data While a = While Condition [Dependency] [JSOperation a]
 -- whileLoop :: Stream s m Char => ParsecT s u m (While a) 
@@ -1114,7 +1362,7 @@ data JSTuple = JSTuple [JSString]
 
 
 --jsFunction = undefined
-jsClass = undefined
+--jsClass = undefined
 jsSubClass = undefined
 jsWhileLoop = undefined
 jsForLoop = undefined

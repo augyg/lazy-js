@@ -1,9 +1,9 @@
 { mkDerivation, base, bibtex, bytestring, containers, directory
 , exceptions, extra, HTTP, http-client, http-client-tls, http-types
 , lens, lib, megaparsec, modern-uri, mtl, parallel, parsec
-, replace-megaparsec, stm, text, time, transformers, webdriver
+, replace-megaparsec, stm, text, time, transformers
 , witherable, jsaddle, which, pkgs, raw-strings-qq, MissingH, nodejs
-, cabal-install, these
+, cabal-install, these, aeson
 }:
 let
   # TODO(galen): figure out if these even matter or just nodejs or something 
@@ -27,8 +27,8 @@ mkDerivation {
     base bibtex bytestring containers directory exceptions extra HTTP
     http-client http-client-tls http-types lens megaparsec modern-uri
     mtl parallel parsec replace-megaparsec stm text time transformers
-    webdriver witherable jsaddle which
-    raw-strings-qq MissingH these
+    witherable jsaddle which
+    raw-strings-qq MissingH these aeson
     # nodejs
     # nodeDeps
     
