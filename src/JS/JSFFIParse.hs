@@ -94,8 +94,19 @@ list: {
    -- could set up logging system to write the failed case
    -- if 99% of the cases are handled then so what 
 
+
+-- Make and use fn:
+  scopeBody = between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope
+
+- implement VarDecl
+
 -}
 
+-- | TODO(replace VarType, [Name]) of JSOperation with this
+data VarDecl = Let' Name
+             | Var' Name
+             | Const' Name
+             | Raw' [Name]
 
 reservedKeywordsTODO = [ "break"
                        , "return"
@@ -313,6 +324,9 @@ jsClass = do
   mConstructor
   many methodWithMaybeClassPrefixes
   char '}'
+
+  pure undefined
+  
   where
     mConstructor = undefined
     methodWithMaybeClassPrefixes = undefined
@@ -360,17 +374,24 @@ data Control a = While (WhileLoop a)
 
 data Object a = Function' (Function a)
               | Class {-todo:make-}
-              | Operation [JSOperation a] -- TODO make this singular again
+              | Operation (JSOperation a) -- TODO make this singular again
 
 returnStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
 returnStatement = undefined
 
-allowedStatementControl :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (JSTopLevel a)
-allowedStatementControl inFnScope =  
-  mReturnStatement 
-  <|> (Declare <$> (jsFunction <|> jsClass <|> (Operation <$> jsOperation)))
-  <|> (Control' <$> (control inFnScope))
-  where 
+allowedStatementControlMany :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m [JSTopLevel a]
+allowedStatementControlMany inFnScope = mconcat <$> (many $ allowedStatementControl' inFnScope)
+
+allowedStatementControl' :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m [JSTopLevel a]
+allowedStatementControl' inFnScope =  
+  (toList' mReturnStatement)
+  <|> (toList' $ Declare <$> (jsFunction <|> jsClass))
+  <|> (toList' $ Control' <$> (control inFnScope))
+  <|> ((fmap (Declare . Operation)) <$> jsOperation)
+  where
+    toList' :: ParsecT s u m a -> ParsecT s u m [a]
+    toList' = fmap (:[])
+    
     mReturnStatement = if inFnScope
                        then (returnStatement)
                        else empty
@@ -384,18 +405,19 @@ allowedStatementControl inFnScope =
       <|> (IF <$> ifStatement inFnScope )
 
     jsFunction = undefined -- for now
-
+    jsClass = undefined
 
 -- for (let i = 0; i < 5; i++) {
 --     console.log(i)
 -- }
 
+-- | TODO(galen): Technically the 2nd datatype of ForHead should be expressions seperated
 type ForHead a = (Maybe [JSOperation a], (Condition a, [Dependency]), Maybe [JSOperation a])
 data ForLoop a = ForLoop (ForHead a) [JSTopLevel a]
 forLoop :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (ForLoop a)
 forLoop inFnScope = do
   triplet <- forHead
-  topLevels <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+  topLevels <- between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope
   -- NOTE: the topLevels may contain the iterator and the control var may be set before the loop
   pure $ ForLoop triplet topLevels 
   where
@@ -436,7 +458,7 @@ ifStatement inFnScope = do
   -- Else is not labelled specially since we can just assume it's true
   where
     expression = inSpace (char '(')  *> jsExpression <* inSpace (char ')')
-    block = between' (char '{') (char '}') $ allowedStatementControl inFnScope
+    block = between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope
     
     ifClause = do
       inSpace $ string "if" 
@@ -483,14 +505,14 @@ switchStatement inFnScope = do
     caseBlocks = do
       v <- inSpace (string "case") *> jsValue <* char ':'
       optional (char '\n')
-      tlstmts <- many $ allowedStatementControl inFnScope
+      tlstmts <- allowedStatementControlMany inFnScope
       pure (v, tlstmts)  
 
     --default' :: Stream s m Char => ParsecT s u m [JSTopLevel a]
     default' = do
       inSpace (string "default") >> char ':'
       optional (char '\n')
-      tlstmts <- many $ allowedStatementControl inFnScope
+      tlstmts <- allowedStatementControlMany inFnScope
       pure tlstmts
       -- and there's essentially an optional newline char 
 
@@ -527,18 +549,18 @@ tryExceptFinally inFnScope = do
     
     tryBlock = do
       inSpace $ string "try"
-      between' (char '{') (char '}') $ allowedStatementControl inFnScope <* (optional $ char '\n')
+      between1 (char '{') (char '}') (allowedStatementControlMany inFnScope) <* (optional $ char '\n')
       
-
+    -- TODO(multiple different error types)
     catchBlock = do
       inSpace $ string "catch"
       mDep <- optionMaybe $ between1 (char '(') (char ')') jsValidName 
-      stmts <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+      stmts <- between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope
       pure (mDep, stmts)
 
     finallyBlock = do
       inSpace $ string "finally"
-      between' (char '{') (char '}') $ allowedStatementControl inFnScope 
+      between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope 
       
       
 
@@ -552,12 +574,12 @@ whileLoop inFnScope = do
     normal = do
       string "while"
       headExpr <- between1 (char '(') (char ')') jsExpression
-      statements <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+      statements <- between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope
       pure $ WhileLoop headExpr statements
     
     doWhile = do
       string "do"
-      statements <- between' (char '{') (char '}') $ allowedStatementControl inFnScope
+      statements <- between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope
       optional $ char '\n'
       string "while"
       many (char ' ')
@@ -593,7 +615,7 @@ jsFunction = do
     anonArrow = do
       args <- inSpace $ (((:[]) . (ArgName)) <$> jsValidName) <|> jsArgTuple
       inSpace $ string "=>"
-      body <- (between' (char '{') (char '}') $ allowedStatementControl True) 
+      body <- (between1 (char '{') (char '}') $ allowedStatementControlMany True) 
               <|> (((:[]) . Declare . Operation . (\(e,deps) -> JSOperation deps Nothing e)) <$> jsExpression)
       pure $ Function Nothing args body
       
@@ -611,7 +633,7 @@ jsFunction = do
           pure (mFnName, args) 
 
         functionBody headArgs = do
-          between' (char '{') (char '}') $ allowedStatementControl True 
+          between1 (char '{') (char '}') $ allowedStatementControlMany True
             
 
 
@@ -830,7 +852,6 @@ jsExpression = do
       (Func f,_) <- between1 (char '(') (char ')') function
       input <- between1 (char '(') (char ')') jsArgTupleInput
       pure $ (ApplyFunc f (fmap fst input), mconcat $ fmap snd input)
-      
     
     -- coercibly becuase the name is not available 
     -- coerciblyAnonFunc = do
@@ -908,7 +929,50 @@ someOperator =
   <|> (Shift <$> shift)
   where
     shift = (try $ string ">>") <|> (try $ string "<<") <|> (try $ string ">>>")
-  
+
+
+-- | For eval of AssignOp,
+-- | state1 >>= \x -> assignF y x
+-- | except for A_Equal : state1 >>= \_ -> y
+-- |   where y :: Expr
+-- |
+-- | ACTUALLY MAYBE: we can just check where 
+data AssignOp = A_Equal -- set to 
+              | A_Plus
+              | A_Subtract
+              | A_Multiply
+              | A_Divide
+              | A_Modulo
+              | A_Exponentiation
+              | A_LShift -- <<=
+              | A_RShift -- >>= (JS)
+              | A_UnsignedRShift
+              | A_ANDB
+              | A_XORB --- ^=
+              | A_ORB
+              | A_AND
+              | A_OR
+              | A_Nullish 
+
+assignmentOp :: Stream s m Char => ParsecT s u m AssignOp
+assignmentOp = do
+  (A_Equal <$ string "=")
+  <|> (A_Plus <$ string "+=")
+  <|> (A_Subtract <$ string "-=")
+  <|> (A_Multiply <$ string "*=")
+  <|> (A_Divide <$ string "/=")
+  <|> (A_Modulo <$ string "%=")
+  <|> (A_Exponentiation <$ string "**=")
+  <|> (A_LShift <$ string "<<=")
+  <|> (A_RShift <$ string ">>=")
+  <|> (A_UnsignedRShift <$ string ">>>=")
+  <|> (A_ANDB <$ string "&=")
+  <|> (A_XORB <$ string "^=")
+  <|> (A_ORB <$ string "|=")
+  <|> (A_AND <$ string "&&=")
+  <|> (A_OR <$ string "||=")
+  <|> (A_Nullish <$ string "??=")
+      
   
       
 
@@ -1018,16 +1082,33 @@ sepBySome p s = f =<< sepBy p s
 
 -- | This cannot assign Raw as this doesnt parse enough context for that
 -- | that's told by jsOperation
-varType :: Stream s m Char => ParsecT s u m VarType
+varType :: Stream s m Char => ParsecT s u m (Name -> VarType)
 varType = 
   (Let <$ (try $ string "let")) <|> (Var <$ (try $ string "var")) <|> (Const <$ (try $ string "const"))
 
-data JSOperation a = JSOperation [Dependency] (Maybe (VarType, [Name])) (Expr a)
+
+-- | We know that the first 3 cases will be the A_Equal op if we were to bind AssignOp to these cases as well
+-- | since that's only legal
+data VarDecl = Let Name
+             | Var Name
+             | Const Name
+             | Raw AssignOp [Name]
+-- | And I could still use Maybe to represent Raw Expressions
+  -- Just  --> Updates AST
+  -- Nothing --> 'run's but no variable set/assigned (may perform side effects --> (globals | IO) )
+      -- NOTE: if there's no deps for a function (if we track) then we can see if local AST is affected upfront
+      -- But why would that ever exist?
+             
+data JSOperationV2 a = JSOperation [Dependency] (Maybe (VarType, [Name], AssignOp)) (Expr a)
+data JSOperation a = JSOperation [Dependency] (Maybe VarDecl) (Expr a)
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 jsOperation :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [JSOperation a]
 jsOperation  = do
   vType <- optionMaybe varType
   case vType of
+
+    vType and special operators are mutually exclusive 
+    
     Just vType' -> 
       flip sepBySome (char ',') $ do
         n <- jsValidName -- NOT jsValidRef; illegal with vartype 
@@ -1049,7 +1130,20 @@ jsOperation  = do
             (expr, deps) <- jsExpression
             -- Let doesnt escape scope so this is most true
             pure $ JSOperation deps (Just (Raw, n)) expr
-    
+
+        
+        anyAssignOp = do
+          flip sepBySome (char ',') $ do
+            n <- jsValidRef <* char '=' -- disallows plain expressions
+            {- FOR OTHER non '=' operators:
+                 let o = show operator in expr= <var> o <expr> 
+            -}
+            
+            (expr, deps) <- jsExpression
+            -- Let doesnt escape scope so this is most true
+            pure $ JSOperation deps (Just (Raw, n)) expr
+
+        
         nakedExpr = do
           (expr,deps) <- jsExpression
           pure $ [JSOperation deps Nothing expr]

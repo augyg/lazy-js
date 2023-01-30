@@ -91,8 +91,10 @@ data Link = Link Text -- TODO(galen): delete
 
 type DepExpr a = (Expr a, [Dependency])
 
+
+
 testEval = do
-  x <- eval (JSOperation [] (Just "x") (Val (Boolean (JSBool True))))
+  x <- eval (JSOperation [] (Just (Let, ["x"])) (Val (Boolean (JSBool True))))
   print $ (\(Boolean (JSBool y)) -> y) x
 
 -- | Control is in the haskell context and expression is in the JS context 
@@ -154,6 +156,10 @@ eval (JSOperation deps mName expr) = do
                -- But i suppose we could also gather this from the deps? 
       
     Just name -> do
+      -- | In this case, we will deal with variations of assignment ops
+        -- | 2 real cases:
+        -- | '=' -> set to result of expression
+        -- | x@else -> x <op> exprResult 
       let showJS (Val (Boolean (JSBool True))) = "true" 
       jsValRaw <- liftIO $ runJSWithCliOneExpr $ showJS expr
       print jsValRaw
