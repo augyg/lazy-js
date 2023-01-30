@@ -28,7 +28,7 @@ import Data.List (intercalate)
 import Control.Monad.Trans.Writer 
 
 
-
+todo = undefined
 
 
 {-
@@ -98,15 +98,15 @@ list: {
 -- Make and use fn:
   scopeBody = between1 (char '{') (char '}') $ allowedStatementControlMany inFnScope
 
-- implement VarDecl
+-- | (Regarding Objects)
+-- | TODO(galen): NOTE: for a: x += 1 or  a: x = 1  console.log (<obj>.a) --> x+1 or 1
+
+-- There is notably a lot of places that take an ObjectOriented except not an operation with Let Var Const
+  -- re-jig this
+
+-- Better way to deal with function naming (eg method)
 
 -}
-
--- | TODO(replace VarType, [Name]) of JSOperation with this
-data VarDecl = Let' Name
-             | Var' Name
-             | Const' Name
-             | Raw' [Name]
 
 reservedKeywordsTODO = [ "break"
                        , "return"
@@ -206,7 +206,8 @@ data Fractional a => JSValue a = Number (JSNumber a)
                                | Null JSNull
                                | Boolean JSBool
                                -- | Tuple [JSValue]
-                               -- | Array [JSValue]
+                               | Array (JSArray a)
+                               | Record (JSObject a)
                                | JSUndefined
 
 jsValue :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSValue a)
@@ -215,14 +216,64 @@ jsValue =
   <|> (String' <$> jsString)
   <|> (Null <$> jsNull)
   <|> (Boolean <$> jsBool)
-  -- <|> jsArray -- NOTE: this can be lazy cuz the parser will be lazy 
-  -- <|> jsObject
-  -- <|> jsTuple 
+  <|> (Array <$> jsArray) -- NOTE: this can be lazy cuz the parser will be lazy 
+  <|> (Record <$> jsonjsObject)
+
+data JSArray a = JSArray [ObjectOriented a]
+jsArray :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSArray a)
+jsArray = do
+  fmap JSArray $ between1 (char '[') (char ']') $ sepBy oneObject (char ',')
+
+-- | TODO(galen): VALID:  var xn = { f() { return 1}, g() {}, a:1 }
+  -- | Because of being an object
+-- | TODO(galen): NOTE: for a: x += 1 or  a: x = 1  console.log (<obj>.a) --> x+1 or 1
+data JSObject a = JSObject [(Name, ObjectOriented a)]
+jsonjsObject :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSObject a)
+jsonjsObject = do
+  -- effectively json with functions
+  fmap JSObject $ between1 (char '{') (char '}') $ sepBy (try keyAndValue <|> (coerceMethod <$> method)) (inSpace $ string ",")
+  where
+    -- Via an alternative way to define the function control flow 
+    coerceMethod :: Method a -> (Name, ObjectOriented a)
+    coerceMethod (Method n args stmts) = (n, Function' $ Function (Just n) args stmts)
+
+    keyAndValue = do
+      n <- jsValidName
+      inSpace $ string ":"
+      v <- oneObject -- but this can also be more : class and function
+      pure (n,v)
+
+-- | A method is a special function that can be used in objects and object templates (classes)
+data Method a = Method Name [ArgName a] [JSTopLevel a] 
+method :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Method a)
+method = do
+  n <- jsValidName
+  tup <- jsArgTuple
+  stmts <- between1 (char '{') (char '}') $ allowedStatementControlMany True
+  pure $ Method n tup stmts
+
+--   One way we could make this clean is to coerce a raw exper
+--   then this is the category of Object 
+
+-- Operation Val 
+
+oneObject :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (ObjectOriented a)
+oneObject = do
+  (Function' <$> jsFunction)
+  <|> (Class <$> jsClass)
+  <|> (Operation <$> jsOperation')
+
+  where jsOperation' = do
+          o <- jsOperation
+          case o of
+            [] -> parserFail "this should never happen"
+            x:[] -> pure x
+            (x:y:xs) -> parserFail "not accepted here"
+--singularRawExpression 
 
 
-      
 
-
+                     
 
 between1 :: Stream s m Char => ParsecT s u m open -> ParsecT s u m end -> ParsecT s u m a -> ParsecT s u m a 
 between1 open end match = open *> match <* end
@@ -286,8 +337,23 @@ newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script'
 
 
 -- | All the control flows which take a Bool should be set to False 
-jsTopLevelStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
-jsTopLevelStatement = undefined
+jsTopLevelStatement :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSTopLevel a)
+jsTopLevelStatement = 
+  (Control' <$> (control False))
+  <|> (Declare <$> (Function' <$> jsFunction <|> (Class <$> jsClass)))
+  where
+    
+    control :: (Fractional a, Read a, Stream s m Char) => Bool -> ParsecT s u m (Control a)
+    control inFnScope =
+      (While <$> whileLoop inFnScope)
+      <|> (For <$> forLoop inFnScope)
+      <|> (Switch <$> switchStatement inFnScope)
+      <|> (TryExcept <$> tryExceptFinally inFnScope)
+      <|> (IF <$> ifStatement inFnScope )
+
+--  <|> (Return <$> ())
+  -- BREAK?
+  
 -- -- | Any top level piece that must be run altogether for actual use and desired behavior
 -- -- | All of these 5 cases may recurse into each other 
 -- jsTopLevelStatement :: Stream s m Char => ParsecT s u m a
@@ -305,13 +371,13 @@ jsTopLevelStatement = undefined
 -- | TEST: with JSDOM object
 
 -- PLACEHOLDER
-type Method = String -- Function
-data JSClass a = JSClass [ArgName a] [Method]
-jsClass :: Stream s m Char => ParsecT s u m (JSClass a)
-jsClass = do
-  -- Need to deal with `this` if im gonna go deref way
-     -- Note that objects mean even more stateful interactions
+--type Method = String -- Function
 
+type Constructor = Method
+type Extends = Dependency
+data JSClass a = JSClass (Maybe Extends) (Maybe (Constructor a)) [Method a]
+jsClass :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSClass a)
+jsClass = do
   -- Verified: methods will share state
     -- I guess considering that there are such things as globals and that we have a system for dealing with
     -- them, this is something we can easily handle with a trick
@@ -319,19 +385,48 @@ jsClass = do
   -- (this.propertyA | class=MyClass )--> VARNAME : MyClass_propertyA
   -- OR we can just store as object: a new type
 
-  className <- inSpace (string "class") *> jsValidName <* sspace 
+  className <- inSpace (string "class") *> jsValidName <* sspace
+  mExtends <- optionMaybe $ string "extends" *> sspace *> (inSpace jsValidName)
   char '{'
-  mConstructor
-  many methodWithMaybeClassPrefixes
+  mConstr <- optionMaybe constructor
+  methods <- many classMethod
+  --many methodWithMaybeClassPrefixes
   char '}'
 
-  pure undefined
+  pure $ JSClass mExtends mConstr methods
+
+  -- the best way to handle this is to completely deref an object upon instantiation (where this class def gets called)
+  --   at this time we have a name (or we dont and we just call the constructor with a fake name)
+  --   Once we have a name:
+  --     this.x --> name.x
+
+  -- so we should parse this class, create an object (where this still exists) then call deThis 
   
   where
-    mConstructor = undefined
-    methodWithMaybeClassPrefixes = undefined
+    constructor = do
+      string "constructor"
+      args <- inSpace jsArgTuple
+      stmts <- between1 (char '{') (char '}') $ allowedStatementControlMany True
+      pure $ Method "constructor" args stmts
+
+    -- | TODO(add prefixes)
+    classMethod = do
+      _ <- prefix -- TODO research these , they also affect names and maybe control flow
+      n <- jsValidName
+      tup <- jsArgTuple
+      stmts <- between1 (char '{') (char '}') $ allowedStatementControlMany True
+      pure $ Method n tup stmts
 
 
+    prefix = todo 
+    -- methodWithMaybeClassPrefixes = do
+    --   optionMaybe 
+
+data Prefix 
+
+-- | Replace all 'this' with name of Object 
+deThis :: JSObject a -> JSObject a
+deThis = undefined
 -- -- | Specifically for LHS of '='    
 -- innerPropValue = do
   
@@ -359,8 +454,8 @@ type InFnScope = Bool
   -- | `this` is a synonym for the outer object (?)
   
 data JSTopLevel a = Control' (Control a)
-                  | Declare (Object a)
-                  | Return (Object a) -- Weird case
+                  | Declare (ObjectOriented a)
+                  | Return (ObjectOriented a) -- Weird case --TODO
                   | Break -- another weird case
 
 -- throw, return, break 
@@ -372,16 +467,16 @@ data Control a = While (WhileLoop a)
                | TryExcept (TryExceptFinally a)
                -- | Return 
 
-data Object a = Function' (Function a)
-              | Class {-todo:make-}
-              | Operation (JSOperation a) -- TODO make this singular again
+data ObjectOriented a = Function' (Function a)
+                      | Class (JSClass a)
+                      | Operation (JSOperation a) -- TODO make this singular again
 
 returnStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
 returnStatement = undefined
 
+-- | This is only because a JSOperation parser can yield many Operations in one constructual line
 allowedStatementControlMany :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m [JSTopLevel a]
 allowedStatementControlMany inFnScope = mconcat <$> (many $ allowedStatementControl' inFnScope)
-
 allowedStatementControl' :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m [JSTopLevel a]
 allowedStatementControl' inFnScope =  
   (toList' mReturnStatement)
@@ -1025,11 +1120,12 @@ jsIterator = undefined
   -- i++
   -- i+=<VAL>
 
-data VarType = Raw -- literally is none (eg: with x as defined obj. : x.r = 1)
+data VarType = Raw' -- literally is none (eg: with x as defined obj. : x.r = 1)
                -- Same behavior as Let
-             | Let
-             | Var
-             | Const
+             | Let'
+             | Var'
+             | Const'
+             
 
 
 
@@ -1082,7 +1178,7 @@ sepBySome p s = f =<< sepBy p s
 
 -- | This cannot assign Raw as this doesnt parse enough context for that
 -- | that's told by jsOperation
-varType :: Stream s m Char => ParsecT s u m (Name -> VarType)
+varType :: Stream s m Char => ParsecT s u m (Name -> VarDecl)
 varType = 
   (Let <$ (try $ string "let")) <|> (Var <$ (try $ string "var")) <|> (Const <$ (try $ string "const"))
 
@@ -1099,7 +1195,7 @@ data VarDecl = Let Name
       -- NOTE: if there's no deps for a function (if we track) then we can see if local AST is affected upfront
       -- But why would that ever exist?
              
-data JSOperationV2 a = JSOperation [Dependency] (Maybe (VarType, [Name], AssignOp)) (Expr a)
+data JSOperationV2 a = JSOperationV2 [Dependency] (Maybe (VarType, [Name], AssignOp)) (Expr a)
 data JSOperation a = JSOperation [Dependency] (Maybe VarDecl) (Expr a)
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 jsOperation :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [JSOperation a]
@@ -1107,42 +1203,27 @@ jsOperation  = do
   vType <- optionMaybe varType
   case vType of
 
-    vType and special operators are mutually exclusive 
+    --vType and special operators are mutually exclusive 
     
     Just vType' -> 
       flip sepBySome (char ',') $ do
         n <- jsValidName -- NOT jsValidRef; illegal with vartype 
         (expr,deps) <- option (Val $ JSUndefined,[]) $ (char '=') *> jsExpression
-        pure $ JSOperation deps (Just (vType',[n])) expr
+        pure $ JSOperation deps (Just (vType' n)) expr
     Nothing ->
       -- | TODO: Only in this case could we find iterators
       -- Only in this case could we find x.y.z..
          -- Note; that these dont need to exist as long as the parent does 
-      naked <|> nakedExpr
+      assignOp <|> nakedExpr
       where
-        naked = do
+        assignOp = do
           flip sepBySome (char ',') $ do
-            n <- jsValidRef <* char '=' -- disallows plain expressions
+            (n,op) <- (,) <$> jsValidRef <*> assignmentOp -- disallows plain expressions
             {- FOR OTHER non '=' operators:
                  let o = show operator in expr= <var> o <expr> 
             -}
-            
             (expr, deps) <- jsExpression
-            -- Let doesnt escape scope so this is most true
-            pure $ JSOperation deps (Just (Raw, n)) expr
-
-        
-        anyAssignOp = do
-          flip sepBySome (char ',') $ do
-            n <- jsValidRef <* char '=' -- disallows plain expressions
-            {- FOR OTHER non '=' operators:
-                 let o = show operator in expr= <var> o <expr> 
-            -}
-            
-            (expr, deps) <- jsExpression
-            -- Let doesnt escape scope so this is most true
-            pure $ JSOperation deps (Just (Raw, n)) expr
-
+            pure $ JSOperation deps (Just (Raw op n)) expr
         
         nakedExpr = do
           (expr,deps) <- jsExpression
@@ -1421,14 +1502,15 @@ execJS = do undefined
 ---------HIGHLIGHTS - Mayve Compilable ?--------------------------------------------------------------------------
 
 data Statement = Statement [Dependency] (Maybe Name) JS
-data JSStatement' = WhileLoop' [Dependency] RawJS
-     		 | ForLoop' [Dependency] RawJS -- note that multiple 'lets' could be used
---		 | CaseStatement (Map Condition RawJS) -- would also need ?: syntax 
-		 | Function'' Name RawJS
-		 | ObjectDeclaration Name RawJS
-		 | Exec JSExpression -- in current top level as raw statement, no assignment
-		 | VarAssign Name JSExpression -- this could be an empty expression 
-		 | Iterator 
+data JSStatement' =
+  WhileLoop' [Dependency]
+  | ForLoop' [Dependency] RawJS -- note that multiple 'lets' could be used
+  --		 | CaseStatement (Map Condition RawJS) -- would also need ?: syntax
+  | Function'' Name RawJS
+  | ObjectDeclaration Name RawJS
+  | Exec JSExpression -- in current top level as raw statement, no assignment
+  | VarAssign Name JSExpression -- this could be an empty expression
+  | Iterator  
 
 -- this is derived from stream editing 
 data JSExpression = JSExpr [Dependency] RawJS 
@@ -1437,7 +1519,7 @@ data JSExpression = JSExpr [Dependency] RawJS
 data JSValue' = JSValue' JSStatement' [Update]
 
 data Update = Reassign JSExpression
-     	    | Iterate JSStatement'
+            | Iterate JSStatement'
 
 
 data ExprPiece = ExprPiece String 
@@ -1519,8 +1601,8 @@ jsObjectDefinition = undefined
   -- <|> reference
 
 -- TODO(galen): try solving annoying Show problem by using Char vs Parser Char as args
-jsArray :: Stream s m Char => ParsecT s u m String
-jsArray = bracketTree (char '[') (char ']') 
+-- jsArray :: Stream s m Char => ParsecT s u m String
+-- jsArray = bracketTree (char '[') (char ']') 
 
 -- | We should check that this isnt a function or class before we parse it 
 -- where Dependencies would come from

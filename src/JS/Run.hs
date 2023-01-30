@@ -94,7 +94,7 @@ type DepExpr a = (Expr a, [Dependency])
 
 
 testEval = do
-  x <- eval (JSOperation [] (Just (Let, ["x"])) (Val (Boolean (JSBool True))))
+  x <- eval (JSOperation [] (Just (Let "x")) (Val (Boolean (JSBool True))))
   print $ (\(Boolean (JSBool y)) -> y) x
 
 -- | Control is in the haskell context and expression is in the JS context 
