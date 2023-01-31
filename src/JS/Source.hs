@@ -20,7 +20,7 @@ instance Monoid Script where
   mempty = Script mempty mempty 
 
 
-newtype JS = JS { unJS :: Text }
+newtype JS = JS { unJS :: Text } deriving (Show, Eq, Ord)
 
 instance Semigroup JS where
   JS script <> JS runNext = JS $ script <> ";\n" <> runNext 

@@ -343,6 +343,7 @@ jsTopLevelStatement :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m 
 jsTopLevelStatement = 
   (Control' <$> (control False))
   <|> (Declare <$> (Function' <$> (try jsFunction) <|> (Class <$> (try jsClass))))
+  <|> 
   where
     
     control :: (Fractional a, Read a, Stream s m Char) => Bool -> ParsecT s u m (Control a)
