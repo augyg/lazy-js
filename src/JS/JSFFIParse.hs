@@ -106,6 +106,8 @@ list: {
 
 -- Better way to deal with function naming (eg method)
 
+-- JSExpression to define a class
+
 -}
 
 reservedKeywordsTODO = [ "break"
@@ -938,19 +940,26 @@ jsBracketed = undefined
 jsExpression :: (Fractional a, Read a, Stream s m Char) => {-Maybe Name ->-} ParsecT s u m ((Expr a), [Dependency])
 jsExpression = 
   -- TODO(galen): OR this can just be a function and anonymous function: var x = function(x){}
-  (try objectInstantiation)
-  <|> (try appliedFunction)
-  <|> (try function)
-  <|> (try arithmeticExpression)
-  <|> jsValue'
+  (try arithmeticExpression)
+  <|> composable
 
   where
-    jsValue' = do
-      v <- jsValue 
-      pure (Val v, [])
-    -- will take on the name parsed by jsOperation
+    composable = -- (try class) 
+      (try appliedFunction)
+      <|> (try function)
+      <|> (try objectInstantiation)
+      -- | TODO(galen): we could actually pass names here to see if this has been decl.
+      <|> (try existingConstructRef) -- name, or property, or fn as property with args 
+      <|> ((,[]) <$> (Val <$> jsValue))
+  
+    -- jsValue' = do
+    --   v <- jsValue 
+    --   pure (Val v, [])
+    -- -- will take on the name parsed by jsOperation
     -- | Note: this should be impossible to try before 
     --function :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
+    funkyNamedClass = undefined 
+    
     function = do 
       -- parse as any func and reduce to anonymous
       Function _ args topLevels <- jsFunction
@@ -978,21 +987,23 @@ jsExpression =
 
     --arithmeticExpression :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
     arithmeticExpression = do 
-      (expr,deps) <- whnfValue
+      (expr,deps) <- composable --whnfValue -- AppliedFunction | JSValue | existingConstructRef 
       many (char ' ')
-      mComp <- (Nothing <$ oneOf ['\n', ';']) <|> (Just <$> do
-                                                      combinator <- someOperator
-                                                      many (char ' ') 
-                                                      exprANDdep <- jsExpression
-                                                      pure (combinator, exprANDdep)
-                                                  )
+      mComp <- (Nothing <$ oneOf ['\n', ';'])
+               <|>
+               (Just <$> do
+                   combinator <- someOperator
+                   many (char ' ') 
+                   exprANDdep <- jsExpression -- this allows infinite ops
+                   pure (combinator, exprANDdep)
+               )
       case mComp of
         Nothing -> pure (expr, deps)
         Just (combinator, (expr2,deps2)) -> pure (Op combinator expr expr2, deps <> deps2)
     
   
-    whnfValue = (,[]) <$> (Val <$> jsValue)
-                <|> existingConstructRef
+    -- whnfValue = (,[]) <$> (Val <$> jsValue)
+    --             <|> existingConstructRef
 
     
     existingConstructRef :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m ((Expr a), [Dependency])

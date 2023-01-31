@@ -141,6 +141,25 @@ testEval = do
   -- Expression -> ...
 -- | So that we may neatly sort it into our tree
 
+
+
+testEvalJSOperation1 = Right [JSOperation [] (Just (Let "x")) (Val (Number (JSNumber 1.0)))]
+
+-- | Should realize that its in normal form and run op (for now; later: delay op) 
+testEvalJSOperation2 = Right [JSOperation [] (Just (Let "x"))
+                              (Op Plus (Val (Number (JSNumber 1.0))) (Val (Number (JSNumber 1.0))))]
+
+testEvalJSOperation3 = Right [JSOperation [] (Just (Let "x"))
+                             (Op Plus (Val (Number (JSNumber 1.0)))
+                              (Op Plus (Val (Number (JSNumber 1.0)))
+                               (Op Plus (Val (Number (JSNumber 1.0)))
+                                (Op GreaterThan (Val (Number (JSNumber 1.0))) (Val (Number (JSNumber 1.0))))
+                               )))
+                            ]
+
+--evalOp :: 
+
+
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 eval :: {-MonadJS m =>-} JSOperation a -> IO (JSValue n) -- could also be an Expr
 eval (JSOperation deps mName expr) = do
@@ -178,8 +197,8 @@ nodePath = $(recover (staticWhichNix "node") (staticWhich "node"))
 runNodeJS :: Script -> IO JSVal 
 runNodeJS = runJSWithCli 
 
-data JSPure a = Val' (JSValue a)
-              | Op Operator (JSPure a) (JSPure a)
+data JSPure a = NormalForm (JSValue a)
+              | PureOp Operator (JSPure a) (JSPure a)
 
 toPure :: (Expr a, [Dependency]) -> m (JSPure a )
 toPure = undefined

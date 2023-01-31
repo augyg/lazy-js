@@ -5,4 +5,4 @@ type Name = String
 type BaseUrl = Url
 type Url = String
 
-data JSType = JSONString String | JSNumber String | JSString String
+--data JSType = JSONString String | JSNumber String | JSString String

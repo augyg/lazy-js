@@ -144,10 +144,10 @@ fromJSFunc jsExpr name = JS $
 
 
 
-showJSType :: JSType -> Text 
-showJSType (JSONString str) = pack str
-showJSType (JSNumber str) = pack str
-showJSType (JSString str) = "\"" <> (pack str) <> "\"" 
+-- showJSType :: JSType -> Text 
+-- showJSType (JSONString str) = pack str
+-- showJSType (JSNumber str) = pack str
+-- showJSType (JSString str) = "\"" <> (pack str) <> "\"" 
 
 mkJSDOMAct :: Html -> JS
 mkJSDOMAct indexHtml = undefined
