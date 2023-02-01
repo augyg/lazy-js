@@ -287,12 +287,6 @@ between1 open end match = open *> match <* end
 
   
 
-parseCallsWith :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, [(Expr a, [Dependency])])
-parseCallsWith = do
-  refdName <- jsValidName
-  args <- option [] jsArgTupleInput
-  pure (refdName, args) 
-
     
 jsArgTupleInput :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [(Expr a, [Dependency])]
 jsArgTupleInput = do
@@ -313,29 +307,6 @@ jsArgTuple = do
 
     jsArgName = ArgName <$> jsValidName
       
-
-data DotRef a = Property Name | Fn (Function a) deriving (Show, Eq, Ord)
-data Ref' a = Prop Name | FnCall Name [(Expr a, [Dependency])] deriving (Show, Eq, Ord)
--- | New Idea:
-data FnCall' a = FnCall' Name  [(Expr a, [Dependency])] deriving (Show, Eq, Ord)
-data ObjectRef'' a = Ref'' [Name] (Maybe (FnCall' a)) deriving (Show, Eq, Ord)
--- | New Idea:
-data JSRef = TopLevelRef | ObjectRef deriving (Show, Eq, Ord)
--- | Although maybe FnCall should be it's own thing 
-type RefChain a = [Ref' a]  -- f(1).x(2).y AND `name` 
-
--- | This implies:
-data Script' a = Script' [JSTopLevel a] deriving (Show, Eq, Ord)
--- | Which thus implies maybe I should just make the Num a => a, a Float
---- AND
--- | This implies: we could do for space efficiency:
-data ScriptRaw = ScriptRaw [(Dependency, RawJS)] deriving (Show, Eq, Ord) -- where type RawJS = JS
--- | AND implies:
-newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script' num) m a } 
--- runScriptWriter has access to a node path
-                
---data Statement = Statement [Dependency] (Maybe Name) JS
-
 
 --jsOperation = jsStatement
 
@@ -919,10 +890,11 @@ data ExprRef = Func'      -- -> Add to AST
 -- | on some variable 'x', if we run the operation 'let y = somefunc()' then x will receive the effect at this time
 -- Anything which can be named 
 data Expr a = Val (JSValue a)
-            | Reference [Ref' a] -- decl. function app and/or object reference
+            | Reference (Ref a) -- decl. function app and/or object reference
             | Op Operator (Expr a) (Expr a) --(RefChain a)
-            | Func (Function a)
-            | ApplyFunc (Function a) [Expr a]
+            | FuncAsExpr (Function a)
+            | ClassAsExpr (JSClass a) 
+            | ApplyFunc (Either Name (Function a)) [Expr a] -- inline funcs + ones in the AST
             | New Name [Expr a]
             deriving (Show, Eq, Ord)
             -- var a = function f(x) { ... }
@@ -938,85 +910,90 @@ jsBracketed = undefined
 -- as this recurses, we will need to add dependencies
 -- | Actually this is only named expressions: for and while cannot be in this named context
 jsExpression :: (Fractional a, Read a, Stream s m Char) => {-Maybe Name ->-} ParsecT s u m ((Expr a), [Dependency])
-jsExpression = 
-  -- TODO(galen): OR this can just be a function and anonymous function: var x = function(x){}
-  (try arithmeticExpression)
-  <|> composable
-
+jsExpression = do
+  (expr,deps) <- composable --whnfValue -- AppliedFunction | JSValue | existingConstructRef
+  (optionMaybe $ (,) <$> (inSpace someOperator) <*> jsExpression) >>= \case
+    Just (combinator, (expr2, deps2)) -> pure $ (Op combinator expr expr2, deps <> deps2)
+    Nothing -> pure (expr,deps)
   where
-    composable = -- (try class) 
-      (try appliedFunction)
-      <|> (try function)
-      <|> (try objectInstantiation)
+    -- only optional for last line of script -> TODO: better
+    --endsExpr = optional $ char ';' <|> char 
+    
+    composable =
+      (try lambdaFunctionApp) -- has deps
+      <|> (try existingFunctionApp)
+      <|> (try functionAsOp)
+      <|> (try classAsOp) 
+      <|> (try objectInstantiation) -- has deps 
       -- | TODO(galen): we could actually pass names here to see if this has been decl.
-      <|> (try existingConstructRef) -- name, or property, or fn as property with args 
+      <|> (try $ ((,[]) . Reference) <$> ref)  -- name, or property, or fn as property with args 
       <|> ((,[]) <$> (Val <$> jsValue))
-  
-    -- jsValue' = do
-    --   v <- jsValue 
-    --   pure (Val v, [])
-    -- -- will take on the name parsed by jsOperation
-    -- | Note: this should be impossible to try before 
-    --function :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
-    funkyNamedClass = undefined 
-    
-    function = do 
-      -- parse as any func and reduce to anonymous
-      Function _ args topLevels <- jsFunction
-      pure $ (Func $ Function Nothing args topLevels, [])
 
-    --appliedFunction :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
-    appliedFunction = do 
-      (Func f,_) <- between1 (char '(') (char ')') function
+    -- | <class | function>AsOp is a weird case for our AST
+    -- | because there is technically the ability to retrieve the inner name
+    -- | But it's not accessible except by the var name in jsOperation
+      -- | One possible way to validly represent this (ignoring future handling of evaluation)
+      -- | is to duplicate names for normal functions and classes
+        -- | eg. fromList [("NAME", Function "NAME" args stmts)] ala class too
+    classAsOp = (((,[]) . ClassAsExpr) <$> jsClass)
+    functionAsOp = (((,[]) . FuncAsExpr) <$> jsFunction)
+
+    existingFunctionApp = do
+      n <- jsValidName
+      input <- jsArgTupleInput
+      pure $ (ApplyFunc (Left n) (fmap fst input), mconcat $ fmap snd input)
+    
+    lambdaFunctionApp = do 
+      FuncAsExpr f <- fmap fst $ between1 (char '(') (char ')') functionAsOp
       input <- between1 (char '(') (char ')') jsArgTupleInput
-      pure $ (ApplyFunc f (fmap fst input), mconcat $ fmap snd input)
+      pure $ (ApplyFunc (Right f) (fmap fst input), mconcat $ fmap snd input)
     
-    -- coercibly becuase the name is not available 
-    -- coerciblyAnonFunc = do
-    --   -- in the case
-    --   undefined
-
-        -- has a dependency by default
-    --objectInstantiation :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
     objectInstantiation = do
-      string "new"
-      many (char ' ')
-      nameRefd <- jsValidName
+      nameRefd <- sspace *> string "new" *> (some $ char ' ') *> jsValidName
       argsAndDeps <- jsArgTupleInput
       pure $ (New nameRefd (fmap fst argsAndDeps), nameRefd : (mconcat $ fmap snd argsAndDeps))
 
-    --arithmeticExpression :: Stream s m Char => ParsecT s u m ((Expr a), [Dependency])
-    arithmeticExpression = do 
-      (expr,deps) <- composable --whnfValue -- AppliedFunction | JSValue | existingConstructRef 
-      many (char ' ')
-      mComp <- (Nothing <$ oneOf ['\n', ';'])
-               <|>
-               (Just <$> do
-                   combinator <- someOperator
-                   many (char ' ') 
-                   exprANDdep <- jsExpression -- this allows infinite ops
-                   pure (combinator, exprANDdep)
-               )
-      case mComp of
-        Nothing -> pure (expr, deps)
-        Just (combinator, (expr2,deps2)) -> pure (Op combinator expr expr2, deps <> deps2)
-    
-  
-    -- whnfValue = (,[]) <$> (Val <$> jsValue)
-    --             <|> existingConstructRef
 
-    
-    existingConstructRef :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m ((Expr a), [Dependency])
-    existingConstructRef = do -- Reference <$> (sepBy (name <|> nameWithArgs) (char '.'))
-      (refs, deps) <- unzip <$> (sepBy (name <|> nameWithArgs) (char '.'))
-      pure (Reference $ refs, mconcat deps)
-        where
-          name = do
-            n <- jsValidName
-            pure (Prop n, [n]) 
-          nameWithArgs = do
-            (n, argExprWithDeps) <- parseCallsWith
-            pure $ (FnCall n argExprWithDeps, mconcat $ fmap snd argExprWithDeps) 
+-- | Note that a ref can refer to anything in the JSAST 
+
+ref :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Ref a)
+ref = do -- Ref <$> jsValidRef <*> (inSpace $ optionMaybe jsArgTupleInput) <*> (inSpace $ optionMaybe (char '.') *> ref) 
+  r <- jsValidRef -- name, will consume up to tuple 
+  optionMaybe jsArgTupleInput >>= \case
+    Just exprAndDeps -> do 
+      let (exprs, depss) = unzip exprAndDeps
+      -- only parse if we find the argtuple 
+      mRef <- optionMaybe $ inSpace (char '.') *> ref
+      pure $ Ref r (mconcat depss) (Just exprs) mRef
+    Nothing ->
+      --  In this case, we should never have a chain
+      pure $ Ref r [] Nothing Nothing
+
+
+-- | We could eval with a trick
+-- | return x --> let returned = x --> (runChained returned : returned.f() ) 
+data Ref a = Ref [Name] [Dependency] (Maybe (RefArgs' a)) (Maybe (Ref a)) deriving (Show,Eq, Ord)
+
+type RefArgs a = [(Expr a, [Dependency])]
+type RefArgs' a = [Expr a] -- cuz we've extracted the deps for the ref 
+
+
+--data DotRef a = Property Name | Fn (Function a) deriving (Show, Eq, Ord)
+--data Ref' a = Prop Name | FnCall Name [(Expr a, [Dependency])] deriving (Show, Eq, Ord)
+-- | New Idea:
+--data FnCall' a = FnCall' Name  [(Expr a, [Dependency])] deriving (Show, Eq, Ord)
+--data ObjectRef'' a = Ref'' [Name] (Maybe (FnCall' a)) deriving (Show, Eq, Ord)
+-- | New Idea:
+--data JSRef = TopLevelRef | ObjectRef deriving (Show, Eq, Ord)
+-- | Although maybe FnCall should be it's own thing 
+--type RefChain a = [Ref' a]  -- f(1).x(2).y AND `name` 
+
+
+      -- parseCallsWith :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, [(Expr a, [Dependency])])
+      -- parseCallsWith = do
+      --   refdName <- jsValidName
+      --   args <- option [] jsArgTupleInput
+      --   pure (refdName, args) 
 
     
 

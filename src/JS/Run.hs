@@ -12,6 +12,7 @@ import JS.Source
 import JS.Types
 
 import Text.Parsec
+import Control.Monad.Trans.Writer
 import Control.Monad.Trans.Except
 import Control.Monad.IO.Class
 import Control.Applicative (some)
@@ -159,6 +160,22 @@ testEvalJSOperation3 = Right [JSOperation [] (Just (Let "x"))
 
 --evalOp :: 
 
+
+-- | This implies:
+data Script' a = Script' [JSTopLevel a] deriving (Show, Eq, Ord)
+-- | Which thus implies maybe I should just make the Num a => a, a Float
+--- AND
+-- | This implies: we could do for space efficiency:
+data ScriptRaw = ScriptRaw [(Dependency, RawJS)] deriving (Show, Eq, Ord) -- where type RawJS = JS
+-- | AND implies:
+newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script' num) m a } 
+-- runScriptWriter has access to a node path
+                
+--data Statement = Statement [Dependency] (Maybe Name) JS
+
+
+
+--evalReference 
 
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 eval :: {-MonadJS m =>-} JSOperation a -> IO (JSValue n) -- could also be an Expr
