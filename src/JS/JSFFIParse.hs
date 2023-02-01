@@ -954,8 +954,8 @@ jsExpression = do
       pure $ (New nameRefd (fmap fst argsAndDeps), nameRefd : (mconcat $ fmap snd argsAndDeps))
 
 
--- | Note that a ref can refer to anything in the JSAST 
-
+-- | Note that a ref can refer to anything in the JSAST and is the main interface to the AST
+-- | NOTE: deRef-ing means to take an Expr to a PureExpr and this is fundamental to all that we are doing 
 ref :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Ref a)
 ref = do -- Ref <$> jsValidRef <*> (inSpace $ optionMaybe jsArgTupleInput) <*> (inSpace $ optionMaybe (char '.') *> ref) 
   r <- jsValidRef -- name, will consume up to tuple 
@@ -1172,7 +1172,7 @@ jsValidName = do
   pure $ first : rest
 
 jsValidRef :: Stream s m Char => ParsecT s u m [Name]
-jsValidRef = sepBy jsValidName (char '.') 
+jsValidRef = sepBySome jsValidName (char '.') 
 
 sepBySome p s = f =<< sepBy p s
   where

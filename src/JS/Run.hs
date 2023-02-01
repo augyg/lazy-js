@@ -89,8 +89,136 @@ data Link = Link Text -- TODO(galen): delete
 --    And note: (let x = x + 1) !== (x += 1) and you cant use += on a const 
 -}
 
+-- | Inner AST for functions 
+type MyAST = JSAST
+
+-- | Eval to WHNF with freezed values from the references 
+evalOp :: MonadJS m => Maybe MyAST -> JSOperation -> m ()
+evalOp mMyOwnAST (JSOperation deps varDecl expr) = do
+
+  -- | Handle case of mMyOwnAST 
+  
+  out <- evalExpr expr
+  case varDecl of
+    Nothing -> pure ()
+    Just x -> putAST x out 
+
+  where
+
+    -- | TODO(what if the expr is already purified?) 
+    evalExpr :: (Fractional, Read a, MonadJS m) => Expr a -> MyAST -> m undefined -- probably JSPure 
+    evalExpr mMyOwnAST = \case
+      Val v -> pure v
+      Reference ref -> evalRef myMyOwnAST ref
+      Op operator expr1 expr2 -> do
+        evalExpr expr1 
+        evalExpr expr2
+      FuncAsExpr f -> putFunctionAST varDecl f 
+      ClassesAsExpr class' -> putClassAST varDecl class'
+      ApplyFunc eithFuncy argExprs -> do
+        -- | The value returned will be the Object given to the 'return' keyword
+        argsPure <- mapM evalExpr argExprs
+        case eithFuncy of
+          Right func -> evalFunc mMyOwnAST func argsPure 
+          Left name -> do
+            func <- getAST name
+            evalFunc mMyOwnAST func argsPure 
+      New name argExprs -> do
+        argsPure <- mapM evalExpr argExprs
+        writeASTWithTemplate varDecl name argsExpr 
+
+    -- | ALL AST Directly
+    -- | How to handle if we are in a function? 
+    evalRef = undefined
+    putFunctionAST = undefined
+    putClassAST = undefined
+    writeASTWithTemplate = undefined
+
+    -- | How to handle if we are in a function? 
+    evalFunc f@(Function mName argNames tLevels) argsPure = do
+      
+      ast <- getAST
+      -- | But we can also be in a nested function which needs access to the transitory AST 
+      
+      let ast' = (assign argNames argsPure) -- length argsIn /= length argsTaken
+      evalFunc' ast tLevels
+      where
+        -- | SHOULD ALWAYS CHECK LOCAL ASTs first (maybe able to merge them) 
+        evalFunc' myOwnAST (topLevel:topLevels) = do
+          -- the only thing that should return a value is a return statement which would imply
+          -- we are done this loop (we may end before eval-ing all topLevels in a func)
+          evalTopLevel (Just myOwnAST) topLevel >>= \case
+            Right pureValue -> pure pureValue
+            Left myOwnAST -> evalFunc' myOwn
+    
+    -- | mMyOwnAST ---> inside function
+    -- | NOTE! This also affects if classes and functions reach global AST 
+    evalTopLevel mMyOwnAST = \case
+      Control' contr -> evalControl mMyOwnAST contr
+      Declare oop -> evalDeclare mMyOwnAST oop
+      Return oop -> case mMyOwnAST of
+        Nothing -> error "this should never happen: return outside function"
+        Just _ -> pure $ Right oop
+  -------------------------------------
+      Break -> undefined -- ? -- i think im gonna do something else 
+  -------------------------------------          
+    -- | TODO(galen): var escapes scope of 
+    evalControl mMyOwnAST = \case
+      While whileLoop -> evalWhileLoop whileLoop
+      For forLoop -> evalForLoop forLoop 
+      IF ifStatement -> evalIfStatement ifStatement
+      Switch switch -> evalSwitch switch
+      TryExcept tryExcFin -> evalTryExcept tryExcFin
+
+    -- | Do these last: its basically just 'should we run these top levels?'
+    evalWhileLoop = undefined
+    evalForLoop = undefined
+    evalIfStatement = undefined
+    evalSwitch = undefined
+    evalTryExcept = undefined
+
+    -- | IF there is no local AST then the global one will be affected    
+    evalDeclare myMyOwnAST = \case
+      Function' newFunctionDef -> putFunctionAST mMyOwnAST newFunctionDef 
+      Class newClassDef -> writeASTWithTemplate mMyOwnAST newClassDef
+      Operation operation -> evalOp mMyOwnAST operation -- VOILA!
+        
+
+
+
 
 type DepExpr a = (Expr a, [Dependency])
+
+
+-- Should we ever copy AST for a massive deRef? In case that never needs to happen?
+  -- I mean, it would still be lazy `\_o_/`
+  -- like an array which parses to be quite intensive (eg. 10000s of refs) 
+
+data JSASTValue a = Pure a
+                  | Object (ObjectOriented a) 
+
+deRefExample = do
+  let jsAST = [("x", "10")] 
+  
+  let Right (expr:[]) = parse jsOperation "" "y=1+x"
+  case expr of
+    JSOperation [] (Var name) (Op [] value (Reference (Ref refNames [] Nothing Nothing))) ->
+      let
+        recursiveLookup = lookup -- placeholder for generalizing to x.y.z.....
+        fromASTRef = recursiveLookup (head refNames) jsAST
+        prevVarState = recursiveLookup name jsAST
+      in
+        -- if it was a jsOperation really
+        -- will actually be modifyAST really 
+        putAST name (PureOp value (Value fromASTRef))
+
+        -- | FINDING: a chain is pure as well once the initial function is run
+        -- | and all the subsequent
+
+
+
+
+        
 
 
 
