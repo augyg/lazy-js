@@ -50,7 +50,7 @@ list: {
 }
 -- |
 
--- | TODO(galen): Condition comes packaged with the [Dependency]
+v-- | TODO(galen): Condition comes packaged with the [Dependency]
 -- TODO(galen): OR this can just be a function and anonymous function: var x = function(x){}
 -- | TODO(galen): iterators
 -- | TODO(galen): obj.newField = <VAL>
@@ -177,6 +177,7 @@ jsString = do
   str <- between' (char '\'') (char '\'') anyChar <|> (between' (char '\"') (char '\"') anyChar) 
   pure $ JSString str
 
+-- | TODO(galen): parse as scientific 
 data Fractional a => JSNumber a = JSNumber a deriving (Show, Eq, Ord)  
 jsNumber :: (Num a, Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSNumber a)
 jsNumber = do
@@ -207,7 +208,6 @@ data Fractional a => JSValue a = Number (JSNumber a)
                                | String' JSString
                                | Null JSNull
                                | Boolean JSBool
-                               -- | Tuple [JSValue]
                                | Array (JSArray a)
                                | Record (JSObject a)
                                | JSUndefined
@@ -222,14 +222,53 @@ jsValue =
   <|> (Array <$> jsArray) -- NOTE: this can be lazy cuz the parser will be lazy 
   <|> (Record <$> jsonjsObject)
 
-data JSArray a = JSArray [ObjectOriented a] deriving (Show, Eq, Ord) 
+data JSArray a = JSArray [Expr a] deriving (Show, Eq, Ord) 
 jsArray :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSArray a)
 jsArray = do
-  fmap JSArray $ between1 (char '[') (char ']') $ sepBy oneObject (char ',')
+  fmap JSArray $ between1 (char '[') (char ']') $ sepBy jsExpression (char ',')
 
 -- | TODO(galen): VALID:  var xn = { f() { return 1}, g() {}, a:1 }
   -- | Because of being an object
 -- | TODO(galen): NOTE: for a: x += 1 or  a: x = 1  console.log (<obj>.a) --> x+1 or 1
+data JSObject a = JSObject [(Name, Expr a)] deriving (Show, Eq, Ord)
+data Method a = Method Name [ArgName a] [JSTopLevel a] deriving (Show, Eq, Ord)
+
+
+
+
+-- class A { someMethod() { return 1 } } --> Object :: (with x = new A()): { someMethod : function() { return 1 }
+
+-- x.someMethod :: Function
+
+-- but may also be
+
+-- x.someMethod :: Value
+
+-- So therefore, this is an Expr
+
+-- so when an object is declared, it must read refd variables from state and evaluate
+
+-- definitions do not read refs until they are actually called 
+
+-- New is really just a function 
+-- function new(classDef, argsForConstructor) {
+--   set object.<method> for method in classDef
+--   set object.props
+--   object = classDef.constructor(argsForConstructor, objectWithMethodRefs) --runConstructor 
+--     return object 
+--   }
+
+newObjectOfClass = do
+  object <- makeEmptyObject 
+  declareMethods `in'` object 
+  object' <- runConstructor object
+
+
+  ... in JSOperation (assuming is named) 
+  putAST object' 
+
+data JSObject a = JSObject [(Name, Expr a)] deriving (Show, Eq, Ord) 
+
 data JSObject a = JSObject [(Name, ObjectOriented a)] deriving (Show, Eq, Ord)
 jsonjsObject :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSObject a)
 jsonjsObject = do
@@ -240,26 +279,30 @@ jsonjsObject = do
     coerceMethod :: Method a -> (Name, ObjectOriented a)
     coerceMethod (Method n args stmts) = (n, Function' $ Function (Just n) args stmts)
 
-keyAndValue :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, ObjectOriented a)
-keyAndValue = do
-  n <- jsValidName
-  inSpace $ string ":"
-  v <- oneObject -- but this can also be more : class and function
-  pure (n,v)
+    keyAndValue :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, (Expr a, [Dependency]))
+    keyAndValue = do
+      n <- jsValidName
+      inSpace $ string ":"
+      v <- jsExpression -- but this can also be more : class and function
+      pure (n,expr)
 
--- | A method is a special function that can be used in objects and object templates (classes)
-data Method a = Method Name [ArgName a] [JSTopLevel a] deriving (Show, Eq, Ord)
-method :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Method a)
-method = do
-  n <- jsValidName
-  tup <- jsArgTuple
-  stmts <- between1 (char '{') (char '}') $ allowedStatementControlMany True
-  pure $ Method n tup stmts
+    -- | A method is a special function that can be used in objects and object templates (classes)
+
+    method :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Method a)
+    method = do
+      n <- jsValidName
+      tup <- jsArgTuple
+      stmts <- between1 (char '{') (char '}') $ allowedStatementControlMany True
+      pure $ Method n tup stmts
 
 --   One way we could make this clean is to coerce a raw exper
 --   then this is the category of Object 
 
 -- Operation Val 
+
+-- oneExpr :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Expr a)
+-- oneExpr 
+  
 
 oneObject :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (ObjectOriented a)
 oneObject = do
@@ -360,7 +403,8 @@ jsClass = do
   -- (this.propertyA | class=MyClass )--> VARNAME : MyClass_propertyA
   -- OR we can just store as object: a new type
 
-  className <- inSpace (string "class") *> jsValidName <* sspace
+  inSpace (string "class")
+  mClassName <- optionMaybe $ jsValidName <* sspace
   mExtends <- optionMaybe $ string "extends" *> sspace *> (inSpace jsValidName)
   char '{'
   mConstr <- optionMaybe constructor
@@ -368,7 +412,7 @@ jsClass = do
   --many methodWithMaybeClassPrefixes
   char '}'
 
-  pure $ JSClass mExtends mConstr methods
+  pure $ JSClass mClassName mExtends mConstr methods
 
   -- the best way to handle this is to completely deref an object upon instantiation (where this class def gets called)
   --   at this time we have a name (or we dont and we just call the constructor with a fake name)
@@ -891,15 +935,52 @@ data ExprRef = Func'      -- -> Add to AST
 -- Anything which can be named 
 data Expr a = Val (JSValue a)
             | Reference (Ref a) -- decl. function app and/or object reference
-            | Op Operator (Expr a) (Expr a) --(RefChain a)
             | FuncAsExpr (Function a)
             | ClassAsExpr (JSClass a) 
             | ApplyFunc (Either Name (Function a)) [Expr a] -- inline funcs + ones in the AST
             | New Name [Expr a]
+            | Op Operator (Expr a) (Expr a)
+            -- SHOULD WE HAVE NEXT? 
+            -- | PureOp Operator (Expr a) (Expr a)
+            -- the only thing that can definitively be pure is a PureOp where we have purified
+            -- (this technically means that we could make all functions pure, but only at certain points
+            -- and so therefore why would we keep it as a function - which represents an Op + SideEffects on
+            -- global state?) 
             deriving (Show, Eq, Ord)
             -- var a = function f(x) { ... }
             -- note that f is not defined 
-             
+
+-- | Although function and class definitions that depend on state are in a sense
+-- | unchanging, and will use the 'asked' state at the time of their application
+isPure :: Expr a -> Bool
+isPure = \case
+  Val _ -> True
+  PureOp _ -> True
+  Op _ -> False
+  _ -> False 
+
+-- | TODO(galen): should this be a smart constructor?
+-- | This is for testing purposes
+-- | If true, can live in state 
+isUnaffectedByState :: Expr a -> Bool
+isUnaffectedByState = \case
+  Val v -> isValuePure v
+  -- PureOp _ _ _ -> True
+  FuncAsExpr _ -> True
+  ClassAsExpr _ -> True
+  Op _ e1 e2 -> isUnaffectedByState e1 && isUnaffectedByState e2 
+  Reference _ -> False
+  ApplyFunc _ _ -> False 
+  New _ _ -> False
+  where isValuePure = \case
+          Number _ -> True
+          String' _ -> True
+          Null _ -> True
+          Boolean _ -> True
+          Array (JSArray exprs) -> getAll . mconcat $ fmap (All . isUnaffectedByState) exprs
+          Record (JSObject nvPairs) -> getAll . mconcat $ fmap (All . isUnaffectedByState . snd) nvPairs
+          JSUndefined _ -> True 
+
 --data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
 
 
@@ -907,6 +988,9 @@ jsBracketed :: ParsecT s u m ()
 jsBracketed = undefined
 
 
+-- | TODO(galen): {a:1}["a"] AND [1,2,3][2] 
+-- | TODO(galen): Stupid case where we have an expression that looks like a raw op
+              -- let myArray = [x=1+1] ;console.log(myArray) --> [2]
 -- as this recurses, we will need to add dependencies
 -- | Actually this is only named expressions: for and while cannot be in this named context
 jsExpression :: (Fractional a, Read a, Stream s m Char) => {-Maybe Name ->-} ParsecT s u m ((Expr a), [Dependency])

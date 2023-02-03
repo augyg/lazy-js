@@ -92,29 +92,177 @@ data Link = Link Text -- TODO(galen): delete
 -- | Inner AST for functions 
 type MyAST = JSAST
 
--- | Eval to WHNF with freezed values from the references 
-evalOp :: MonadJS m => Maybe MyAST -> JSOperation -> m ()
-evalOp mMyOwnAST (JSOperation deps varDecl expr) = do
+-- | Functions may write to their local AST and update global state
+  -- | But locally declared* ObjectOriented's are not visible 
+
+-- | 2 main jobs:
+-- | 1) add to, update, take from AST
+           -- | Get -> Reference
+           -- | Set -> JSOperation + (class def, function def)
+           -- | Modify -> ( Set:Erase | Iterate ) 
+-- | 2) control when to do something =<< parser
+
+--type ASTValue = JSExpr 
+
+todo
+-- | isJust if full dot pattern was in this AST 
+lookupAST :: [Name] -> JSAST -> Maybe ExprAST
+lookupAST (n:nChain) (Recordc ast) =
+  case Data.List.lookup n ast of
+    Just v -> case nChain of
+      [] -> Just v
+      xs -> case v of
+        ValC (RecordC kv) -> lookupAST nChain (RecordC kv)
+        _ -> Nothing -- TODO(galen): better error handling 
+      lookupAST nChain v
+    Nothing -> Nothing
+      --error "value referenced before defining"
+
+
+-- | By this reasoning about types, we can simply 'demand' values by asking for them
+-- | for class objects tho, like XMLHTTPRequest, could we 
+runMonadJS :: Maybe MyAST -- optional pass of starting AST 
+           -> [JSTopLevel a]
+           -> m JSAST
+runMonadJS = undefined
+
+
+
+--data JSAST = JSAST (Map Name ExprAST)
+type JSAST a = JSRecordC a 
+
+
+applyFunc :: (Function a) -> [Expr a] -> Expr a -- evalExpr (ApplyFunc f args) 
+applyFunc = undefined
+
+-- Output of smart constructor which will use isUnaffectedByState
+data JSValueC a = NumberC (JSNumber a)
+                | StringC JSString 
+                | NullC JSNull
+                | BooleanC JSBool
+                | ArrayC (JSArrayC a)
+                | RecordC (JSRecordC a)
+                | JSUndefinedC 
+                
+data JSArrayC a = JSArrayC [ExprAST a]
+data JSRecordC a = JSRecordC [(Name, ExprAST a)]
+
+-- | Note: when we add key and index lookups, there wont be a direct equivalent ExprAST for that Expr a            
+data ExprAST a = ValC (JSValueC a)
+               | FuncAST (Function a)
+               | ClassAST (Class a)
+               | PureOp (ExprAST a) (ExprAST a)
+                 
+
+-- | Eval to WHNF with freezed values from the references
+-- | evalExpr should only affect a JSAST through evalOp and never directly itself
+-- | however this doesn't mean that if the expression is function app for example, that
+-- | it can't modify state
+-- | SO: we should no new keys after evalExpr in theory
+evalJSOp :: MonadJS m => Maybe MyAST -> JSOperation -> m ()
+evalJSOp mMyOwnAST (JSOperation deps varDecl expr) = do
 
   -- | Handle case of mMyOwnAST 
   
-  out <- evalExpr expr
+  exprOut <- evalExpr expr
+  -- | TEST!
+  when (not $ isUnaffectedByState exprOut) $ error $ "invalid expression handling" <> (show expr) 
+
+ 
   case varDecl of
     Nothing -> pure ()
-    Just x -> putAST x out 
+    -- | TODO(galen): detect if we care about this effect
+      
+    --------------------Can only affect innermost---------------------------------------
+    -- is like Data.Map.insert
+    -- NOTE! All values should be a PureOp or Class or Function
+    -- NOTE! classes may be overwritten by values 
+    Just (Raw A_Equal ref') -> ""
+      -- | Can only affect the innermost function AST (if we are in a fn that is)
+      case mMyOwnAST of
+        Just myAst -> putSubStateT myAst name objectOriented
+        Nothing -> do
+          ast <- getAST 
+          putAST ast name objectOriented          
+    
+    -- Is like Data.Map.adjust :: (a -> a) -> k -> Map k a
+    -- TODO(galen): should disallow change 
+    Just (Raw iterOp ref') -> do 
+      -- | Can update and change global or transitory declarations 
+      oo <- getsAST ref' -- TODO(galen): lens for maps
+      -- | Note that the next line works regardless of if its actually a Value or Expr
+      -- | Although we may need to make the '[Function: name]' and '[class name]' strings  
+      putAST $ PureOp $ Op (toAssocOperator iterOp) oo objectOriented
+      
+    -- is like Data.Map.insert
+    -- TODO: should disallow change for prev Const and Let 
+    Just notRawName ->
+      -- | TODO(galen): it would be valuable to check if Const was used to define this variable we intend to implement
+      -- | SUB-TODO: we'd need to handle an error here: what should the business logic be for errors? Configurable?
+      let toName = \case
+            Let n -> n 
+            Var n -> n
+            Const n -> n
+            _ -> error "wtf" 
+      in case mMyOwnAST of
+           Just myAst -> putSubStateT myAst name objectOriented 
+           Nothing -> do
+             ast <- getAST 
+             putAST ast name objectOriented
+    --------------------Can only affect innermost---------------------------------------      
 
+  
   where
+    -- | NOTE: both of these have to be able to handle [Name] (as well as Name) cases
+    -- | which implies that we may modify an object (which is really a recursive Map) 
+    putSubStateT = undefined
+    putAST = undefined
+    toAssocOperator = undefined -- eg: += --> + 
 
-    -- | TODO(what if the expr is already purified?) 
-    evalExpr :: (Fractional, Read a, MonadJS m) => Expr a -> MyAST -> m undefined -- probably JSPure 
+    -- | TODO(what if the expr is already purified?)
+    -- | This should return something that is unaffected by global state; we have reduced this depedency
+    -- | on global state to
+    -- | TODO(galen): can we confirm that all illogical expressions that are syntacticall valid give JSUndefined?
+    evalExpr :: (Fractional, Read a, MonadJS m) => Expr a -> MyAST -> m (ExprAST a)
     evalExpr mMyOwnAST = \case
-      Val v -> pure v
+
       Reference ref -> evalRef myMyOwnAST ref
+      -- | we may need to make the '[Function: name]' and '[class name]' strings if they are these cases
+      -- | but in this far, this is valid and we dont need to care 
       Op operator expr1 expr2 -> do
-        evalExpr expr1 
-        evalExpr expr2
+        pureE1 <- evalExpr expr1 
+        pureE2 <- evalExpr expr2
+        PureOp pureE1 pureE2  
+
+      -------------------------------------------------
+      --- All of these are ready to be put to global state 
+      Val v ->
+        val <- case v of
+          -- | Need to make Objects and Arrays WHNF
+          Number n -> pure $ NumberC n 
+          String' s -> pure $ StringC s 
+          Null n -> pure $ NullC n
+          Boolean b -> pure $ BooleanC b
+          -- | TODO(galen): LookupArray (Array a) (Expr a) --> undefined if not Int
+          Array (JSArray exprs) -> do
+            -- | TODO(galen): should we be even lazier by just binding in a tuple with the current AST 
+            exprCs <- mapM evalExpr exprs
+            pure $ ArrayC $ JSArrayC exprCs
+          -- | TODO(galen): LookupObject (Array a) (Expr a) --> undefined if not string
+          Record obj -> fmap (RecordC . JSRecordC) $ mapM (\(name,e) -> (name,) <$> (evalExpr e)) obj
+          -- where
+          --   processKeyValue :: (Name, Expr a) -> m (Name, ExprAST a)
+          --   processKeyValue (name, expr) = do
+          --     exprC <- evalExpr expr
+          --     pure (name, exprC) 
+          JSUndefined -> pure JSUndefinedC 
+
+        pure $ ValC val
+          
+
       FuncAsExpr f -> putFunctionAST varDecl f 
       ClassesAsExpr class' -> putClassAST varDecl class'
+      -------------------------------------------------
       ApplyFunc eithFuncy argExprs -> do
         -- | The value returned will be the Object given to the 'return' keyword
         argsPure <- mapM evalExpr argExprs
@@ -127,16 +275,34 @@ evalOp mMyOwnAST (JSOperation deps varDecl expr) = do
         argsPure <- mapM evalExpr argExprs
         writeASTWithTemplate varDecl name argsExpr 
 
+    -- | This could also be used with VarDecl ~ Raw Op [Name], at least for getsAST
     -- | ALL AST Directly
-    -- | How to handle if we are in a function? 
-    evalRef = undefined
+    -- | How to handle if we are in a function?
+    evalRef :: ([MyAST] -- innerMost are on top of stack (first) 
+               , JSAST)
+            -> Ref
+            -> ObjectOriented
+    evalRef asts (Ref nameChain deps mArgs mChain) = do
+      lookupAST nameChain asts 
+      
+      
+      
+      -- | best way to set this up is to allow infinite recursion (and therefore also simple lookups)
+      -- | and then check if its a func; if it is, then apply args if not (== [])
+      -- | then if we have args for a func: check if we chain (we can now assume the return-ed is an Object)
+         -- | DoChain --> pass return statement to chain statement
+               -- | Only ns@[Name] ~~ Property Grab from (Return x) --> \x -> evalRefObj ns x
+               -- | [Name] <+> FnCall ~~ Property Grab from (Return x) --> \x -> if isFn then evalFunc x args 
+                    -- | Except since this may infinitely repeat, call evalRef which will call evalFunc
+      
     putFunctionAST = undefined
     putClassAST = undefined
     writeASTWithTemplate = undefined
 
-    -- | How to handle if we are in a function? 
+    -- | How to handle if we are in a function?
+    -- | TODO(galen) : runStateT evalFunc' ((mkAST argNames argsPure) : containerAST)
     evalFunc f@(Function mName argNames tLevels) argsPure = do
-      
+      -- | WAIT! how do we know that argsPure is actually pure???????????
       ast <- getAST
       -- | But we can also be in a nested function which needs access to the transitory AST 
       
@@ -175,13 +341,14 @@ evalOp mMyOwnAST (JSOperation deps varDecl expr) = do
     evalForLoop = undefined
     evalIfStatement = undefined
     evalSwitch = undefined
+    -- | STRICT!!!!!!!!!!!
     evalTryExcept = undefined
 
     -- | IF there is no local AST then the global one will be affected    
     evalDeclare myMyOwnAST = \case
       Function' newFunctionDef -> putFunctionAST mMyOwnAST newFunctionDef 
       Class newClassDef -> writeASTWithTemplate mMyOwnAST newClassDef
-      Operation operation -> evalOp mMyOwnAST operation -- VOILA!
+      Operation operation -> evalJSOp mMyOwnAST operation -- VOILA!
         
 
 

@@ -97,7 +97,7 @@ data JSAST' = JSAST' { inSet :: M.Map Name JSVal -- could include dom = ...
 
 
 
-type JSAST a = JSObjectC a 
+
 
 
 
