@@ -108,6 +108,10 @@ v-- | TODO(galen): Condition comes packaged with the [Dependency]
 
 -- JSExpression to define a class
 
+-- CASE: (function f() { return "dedwed" })().length --> 6
+  -- is like a mix of applyFunc and chain
+  -- Solution: can chain on any expression (except for Number|undefined|Bool: JSValue = { Set:Object} | { Set:Obj } })
+
 -}
 
 reservedKeywordsTODO = [ "break"
@@ -391,6 +395,13 @@ jsTopLevelStatement =
 -- PLACEHOLDER
 --type Method = String -- Function
 
+
+
+
+  
+  
+
+
 type Constructor = Method
 type Extends = Dependency
 data JSClass a = JSClass (Maybe Extends) (Maybe (Constructor a)) [Method a] deriving (Show, Eq, Ord)
@@ -474,7 +485,7 @@ type InFnScope = Bool
   
 data JSTopLevel a = Control' (Control a)
                   | Declare (ObjectOriented a)
-                  | Return (ObjectOriented a) -- Weird case --TODO
+                  | Return (Expr a) -- Weird case --TODO
                   | Break -- another weird case
                   deriving (Show, Eq, Ord)
 -- throw, return, break 
@@ -939,7 +950,10 @@ data Expr a = Val (JSValue a)
             | ClassAsExpr (JSClass a) 
             | ApplyFunc (Either Name (Function a)) [Expr a] -- inline funcs + ones in the AST
             | New Name [Expr a]
+            -- | TODO: New (Expr a) [Expr a] because: new {a : class {} }.a(1)
+            -- | and: new (class A {})()
             | Op Operator (Expr a) (Expr a)
+            --  This Chain -- valid globally
             -- SHOULD WE HAVE NEXT? 
             -- | PureOp Operator (Expr a) (Expr a)
             -- the only thing that can definitively be pure is a PureOp where we have purified
@@ -987,7 +1001,7 @@ isUnaffectedByState = \case
 jsBracketed :: ParsecT s u m ()
 jsBracketed = undefined
 
-
+-- | TODO: new {a : class {} }.a(1)
 -- | TODO(galen): {a:1}["a"] AND [1,2,3][2] 
 -- | TODO(galen): Stupid case where we have an expression that looks like a raw op
               -- let myArray = [x=1+1] ;console.log(myArray) --> [2]
@@ -1034,7 +1048,7 @@ jsExpression = do
     
     objectInstantiation = do
       nameRefd <- sspace *> string "new" *> (some $ char ' ') *> jsValidName
-      argsAndDeps <- jsArgTupleInput
+      argsAndDeps <- option [] $ jsArgTupleInput
       pure $ (New nameRefd (fmap fst argsAndDeps), nameRefd : (mconcat $ fmap snd argsAndDeps))
 
 
@@ -1283,7 +1297,8 @@ data VarDecl = Let Name
   -- Nothing --> 'run's but no variable set/assigned (may perform side effects --> (globals | IO) )
       -- NOTE: if there's no deps for a function (if we track) then we can see if local AST is affected upfront
       -- But why would that ever exist?
-             
+
+-- | TODO: z = t = u = 1
 data JSOperationV2 a = JSOperationV2 [Dependency] (Maybe (VarType, [Name], AssignOp)) (Expr a)
 data JSOperation a = JSOperation [Dependency] (Maybe VarDecl) (Expr a) deriving (Show, Eq, Ord)
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS

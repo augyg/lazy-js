@@ -567,8 +567,16 @@ evalFuncProperty f@(Function mName argNames tLevels) argExprsPure = do
   where
     removeDeclarationsFromScope :: MonadJS m => m ()
     removeDeclarationsFromScope = do
-      (mInner, inters, g) <- getAST 
-    
+      (mInner, inters, JSObjectC g) <- getAST 
+      case mInner of
+        Nothing -> error "removal of non-existent AST upon completion of funcProp"
+        Just astI ->
+          let this = lookupAST ["this"] astI
+              super = lookupAST ["super"] astI
+          in case inters of
+               [] -> putASTs (Nothing, [], JSObjectC (
+          
+      
     evalFunc' :: [JSTopLevel a] -> m (Either ObjectOriented ()) 
     evalFunc' (tLevel:tLevels) = do
       eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
@@ -617,7 +625,15 @@ evalRef r@(Ref nameChain deps mArgs mChain) = do
               -- Objects need to be set up
               let f' = (Function mName (ArgName "this" :argNames) tLevels)
               let args' = (ValC (RecordC jsRecordC)) : argsPassed
-              exprC <- evalFunc f' args'
+              exprC <- evalFuncProperty f' args'
+              -- | This yields yet another problem:
+               -- | this will return an Expr which is valid here, but what do we with the changed inner state?
+               -- | because we don't know if it's even reference-able itself
+               -- | ..wait
+               -- | if we have the name (or nameChain prefix) of the calling function, we can handle this
+               -- | eg:
+                -- | class Chainerr { constructor() {this.x = 1} iter() { this.x += 1; return 7 }}
+                -- | c = new Chainer 
               chainExprMaybe exprC mChain
             _ -> error "type error: applied args to non function"
 

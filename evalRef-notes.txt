@@ -1,0 +1,43 @@
+      -- | 'this' in a function still refers to global
+      -- | this when the calling function is a property of an object refers to
+      -- | The encasing Object, ***even if it's not derived from a template 
+
+
+          -- | This could also be used with VarDecl ~ Raw Op [Name], at least for getsAST
+          -- | ALL AST Directly
+          -- | How to handle if we are in a function?
+          -- | TODO(galen): factor out Chaining 
+
+              -- | Instead: we should check if there's an entry for 'this' as an object
+              -- | Exists -> we are in an object, so this refers to a prop of this object
+               -- | meaning we are in a property function, so this can only refer to the mInnerScope
+               -- | and mInnerScope must be (Just ast) or we've done something stupid: evalFunc doesn't work
+              -- | properly
+              -- | !Exists -> we are not in an object
+               -- | in this case it could only come from global
+
+              -- also make sure that we return the object when we eval a propertyFunction
+
+                    -- then we are verifiably not in a propertyFunction (or we have invalid code)
+                    -- since running a propertyFunction should handle setting 'this'
+              --       case lookupAST nameChain astI of
+              --         Just 
+              --     Nothing -> ""
+              --   lookupGlobal -- can only be from global
+
+                
+                -- could i handle this as a special case?
+                -- we can only chain on objects and only objects can have 'this'
+                -- we could perhaps turn all fields of the record into attributes under 'this'
+                -- so if we do this strategy then we also need to include super
+                
+                -- | So the thing about Objects is there are the ones that are derived from a class
+                -- | and ones derived from an expression
+                
+                -- | Both will have fields that are reduced to ExprAST
+                -- | the variation is in the functions where the functions may call either super.<someFunctionWhichMayHaveNameConflict>() {refs to vars from its constructor (available by 'this'} or this.field
+                
+                -- | the only problem with this approach is that the 'this' keyword can happen anywhere
+
+                -- | obj.a is only available either by literally obj.a or this.a
+                -- | chaining is specifically for ObjectOriented ("", {}, fn) 

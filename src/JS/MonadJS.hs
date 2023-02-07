@@ -59,12 +59,32 @@ Idea:
 
 type Html = String 
 
-class MonadJS m where
+class Monad m => MonadJS m where
   runJS' :: JS -> m () -- Update is in state 
   getAST :: m JSAST
   putAST :: JSAST -> m ()
   setsAST :: Name -> String -> m ()
   {-# MINIMAL getAST, putAST #-}
+
+
+
+class HasJSState s where
+  getRef :: (Fractional a, Read a) => s -> ExprAST a
+  -- TODO: this 
+  putRef :: (Fractional a, Read a) => s -> Name -> ExprAST a -> ExprAST a
+  -- TODO: 
+  --modifyRef 
+
+  
+  
+instance HasJSState (MyAST, [MyAST], JSAST)
+instance HasJSState ([MyAST], JSAST)
+instance HasJSState JSAST 
+
+instance HasJSState (Maybe MyAST, [MyAST], JSAST)
+
+instance MonadJSState state => MonadJS (JST state) where
+  
 
 getsAST :: (MonadJS m, FromJSON a) => Name -> m a
 getsAST name = undefined
@@ -97,13 +117,16 @@ data JSAST' = JSAST' { inSet :: M.Map Name JSVal -- could include dom = ...
 
 
 
-type JSAST a = JSObjectC a 
+
 
 
 
 -----------------------------------------------------------------------------
--- | In order for a 
-newtype JST m a = JST { runJST :: StateT JSAST (ExceptT JSError m) a }
+-- | In order for a
+type JSAST = JSRecordC
+type MyAST = JSAST
+type JSGlobal = (Maybe MyAST, [MyAST], JSAST)
+newtype JST m a = JST { runJST :: StateT JSGlobal (ExceptT JSError m) a }
 
 -- | TODO(Galen): add in forall m. MonadIO m => m
 newtype JSDomT m a = JSDomT { runJSDomT :: StateT (Html, JSAST) (ExceptT JSError m) a }
