@@ -41,3 +41,33 @@
 
                 -- | obj.a is only available either by literally obj.a or this.a
                 -- | chaining is specifically for ObjectOriented ("", {}, fn) 
+
+                
+              -- | This yields yet another problem:
+               -- | this will return an Expr which is valid here, but what do we with the changed inner state?
+               -- | because we don't know if it's even reference-able itself
+               -- | ..wait
+               -- | if we have the name (or nameChain prefix) of the calling function, we can handle this
+               -- | eg:
+                -- | class Chainerr { constructor() {this.x = 1} iter() { this.x += 1; return 7 }}
+                -- | c = new Chainer
+                -- | c.iter() --> (Return 7, c.x = 1 + 1)
+                -- | c.iter() --> (Return 7, c.x = 1 + 1 + 1)
+                -- | AND
+                -- | c.d = new Chainerr
+                -- | c.d.iter() -- c.d is what is affected 
+
+		-- | But whats awesome here: is that this solution also solves how to handle the odd
+		-- | case of window.doSomething() as we know handle memory properly in cases
+		-- | where we are not simply using an equals sign or the like
+		   -- | This therefore means that we can expect to handle all cases
+
+      -- will this work for more complex cases?
+        -- eg. x.f().y.z() .... i mean probably right? cuz result of z is deleted/not retained?
+        -- but we actually dont know that we will handle that properly
+          -- we can gurantee this if before we handle .y.z() we set the new value of x resulting from
+          -- the application of f()
+
+      -- Also based on the error: Uncaught TypeError: Cannot read properties of undefined (reading 'x')
+         -- its very safe to say that '.p' means of returned, get property p NOT some second execution
+         -- of the base object 

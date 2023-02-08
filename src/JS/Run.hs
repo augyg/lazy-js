@@ -108,29 +108,23 @@ type MyAST = JSAST
 lookupGlobal :: [Name] -> JSAST -> Maybe (ExprAST a)
 lookupGlobal = lookupAST 
 
-type InObject = Bool 
--- | TODO(remove InObject)
-lookupASTs :: [Name] -> (Maybe JSAST, [MyAST], JSAST) -> Maybe (ExprAST a)
-lookupASTs (n:nameChain) (mInner, inters, global) =
-  -- "this" -> case inObject of
-  --   False -> lookupGlobal nameChain global --todo: as StateT
-  --   True -> case mInner of
-  --     Nothing -> Nothing
-  --     Just astI -> lookupAST (n:nameChain) astI
-  -- _ ->
-  case mInner of
-    Nothing -> -- we must be in global
-      case inters of
-        (x:xs) -> error "invalid handling of AST detected"
-        [] -> lookupGlobal global 
-    Just astI -> case lookupAST (n:nameChain) astI of
-      Just e -> Just e 
-      Nothing -> case getFirst $ First . (lookupAST (n:nameChain)) <$> inters of
-        Just e -> Just e 
-        Nothing -> lookupGlobal (n:nameChain) global
       
   
   
+
+-- | isJust if full dot pattern was in this AST 
+lookupAST :: [Name] -> JSAST -> Maybe (ExprAST a)
+lookupAST (n:nChain) (Recordc ast) =
+  case Data.List.lookup n ast of
+    Just v -> case nChain of
+      [] -> Just v
+      xs -> case v of
+        ValC (RecordC kv) -> lookupAST nChain (RecordC kv)
+        _ -> Nothing -- TODO(galen): better error handling 
+      lookupAST nChain v
+    Nothing -> Nothing
+      --error "value referenced before defining"
+
 
 -- | isJust if full dot pattern was in this AST 
 lookupAST :: [Name] -> JSAST -> Maybe ExprAST
@@ -144,6 +138,7 @@ lookupAST (n:nChain) (Recordc ast) =
       lookupAST nChain v
     Nothing -> Nothing
       --error "value referenced before defining"
+
 
 
 -- | By this reasoning about types, we can simply 'demand' values by asking for them
@@ -261,8 +256,8 @@ evalJSOp mMyOwnAST (JSOperation deps varDecl expr) = do
 
  
   case varDecl of
-    Nothing -> pure ()
-    -- | TODO(galen): detect if we care about this effect
+    Nothing -> i think (  evalRef expr ) 
+    
       
     --------------------Can only affect innermost---------------------------------------
     -- is like Data.Map.insert
@@ -330,6 +325,15 @@ evalJSOp mMyOwnAST (JSOperation deps varDecl expr) = do
         -- | until it gets a class def
       -- this can also work with function instead of an actual class def
       -- | TODO(galen): set .constructor field to '[class <Name>]'
+      -- | 
+      -- | NOTE! fakeObject = { super : { f : function() {}, g : function() {} }, this : { x : 1}}
+      -- | this.x == 1
+      -- | super.f `oftype` function
+      -- | super.g `oftype` function
+      -- | When objects are run in a functional-dependent context (evalFuncProperty)
+      -- | then super stays the same (it just sits there until we use it) ((wait, is it usable in plain ctx?))
+        -- | we just need to put them there when we create the object 
+      -- | and all object properties become wrapped in 'this' reference 
       New className argExprs -> do
         objC <- createNewObject className argExprs
         pure $ ValC objC
@@ -528,137 +532,266 @@ evalJSOp mMyOwnAST (JSOperation deps varDecl expr) = do
 evalFunc :: Function a -> [ExprAST a] -> m (ExprAST a)
 evalFunc f@(Function mName argNames tLevels) argExprsPure = do
   addArgsToASTScope argNames argExprsPure --mMyOwnAST
-  eithExprAST <- evalFunc'
+  eithExprAST <- evalFuncInner
   removeDeclarationsFromScope 
   case eithExprAST of
     Right () -> -- never returned 
       pure $ Val JSUndefinedC
     Left returned ->
       pure returned
-  where
-    -- | Step out one level of scope 
-    removeDeclarationsFromScope :: MonadJS m => m ()
-    removeDeclarationsFromScope = do
-      (_, inters, g) <- getAST
-      case inters of
-        [] -> putAST (Nothing, [], g) -- not in a function now 
-        (x:xs) -> putAST (Just x, xs, g) 
-    
-    evalFunc' :: [JSTopLevel a] -> m (Either ObjectOriented ()) 
-    evalFunc' (tLevel:tLevels) = do
-      eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
-      case eithReturned of
-        Left exprC ->
-          pure exprC
-        Right () ->
-          evalFunc' tLevels
 
-
-evalFuncProperty :: Function a -> [ExprAST a] -> m (ExprAST a)
+evalFuncProperty :: Function a -> [ExprAST a] -> m (ExprAST a, JSRecordC a)
 evalFuncProperty f@(Function mName argNames tLevels) argExprsPure = do
   addArgsToASTScope argNames argExprsPure --mMyOwnAST
   eithExprAST <- evalFunc'
+  this <- getThis 
   removeDeclarationsFromScope 
   case eithExprAST of
     Right () -> -- never returned 
-      pure $ Val JSUndefinedC
+      pure (Val JSUndefinedC, this)
     Left returned ->
-      pure returned
+      pure (returned, this)
   where
-    removeDeclarationsFromScope :: MonadJS m => m ()
-    removeDeclarationsFromScope = do
-      (mInner, inters, g) <- getAST 
+    getThis :: MonadJS m => m ()
+    getThis = do
+      (mInner, inters, JSObjectC g) <- getAST
+      case mInner of
+        Nothing -> error "found no inner scope while evaluating function"
+        Just astI -> pure . fromJust . (lookupAST ["this"]) $ astI
     
-    evalFunc' :: [JSTopLevel a] -> m (Either ObjectOriented ()) 
-    evalFunc' (tLevel:tLevels) = do
-      eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
-      case eithReturned of
-        Left exprC ->
-          pure exprC
-        Right () ->
-          evalFunc' tLevels
+evalFuncInner :: [JSTopLevel a] -> m (Either ObjectOriented ()) 
+evalFuncInner (tLevel:tLevels) = do
+  eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
+  case eithReturned of
+    Left exprC ->
+      pure exprC
+    Right () ->
+      evalFunc' tLevels
+
+-- | Step out one level of scope 
+removeDeclarationsFromScope :: MonadJS m => m ()
+removeDeclarationsFromScope = do
+  (_, inters, g) <- getAST
+  case inters of
+    [] -> putAST (Nothing, [], g) -- not in a function now 
+    (x:xs) -> putAST (Just x, xs, g) 
 
 
+
+-- evalFuncProperty :: Function a -> [ExprAST a] -> m (ExprAST a)
+-- evalFuncProperty f@(Function mName argNames tLevels) argExprsPure = do
+--   addArgsToASTScope argNames argExprsPure --mMyOwnAST
+--   eithExprAST <- evalFunc'
+--   this <- getThis 
+--   removeDeclarationsFromScope 
+--   case eithExprAST of
+--     Right () -> -- never returned 
+--       pure $ Val JSUndefinedC
+--     Left returned ->
+--       pure returned
+--   where
+--     getThis :: MonadJS m => m ()
+--     getThis = do
+--       (mInner, inters, JSObjectC g) <- getAST
+--       case mInner of
+--         Nothing -> error "found no inner scope while evaluating function"
+--         Just astI -> pure . fromJust . (lookupAST ["this"]) $ astI
+    
+--     removeDeclarationsFromScope :: MonadJS m => m ()
+--     removeDeclarationsFromScope = do
+--       (mInner, inters, JSObjectC g) <- getAST 
+--       case mInner of
+--         Nothing -> error "removal of non-existent AST upon completion of funcProp"
+--         Just astI ->
+--           let this = lookupAST ["this"] astI
+--               -- super = lookupAST ["super"] astI
+--           in case inters of
+--                [] -> putASTs (Nothing, [], JSRecordC (
+          
+      
+--     evalFunc' :: [JSTopLevel a] -> m (Either ObjectOriented ()) 
+--     evalFunc' (tLevel:tLevels) = do
+--       eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
+--       case eithReturned of
+--         Left exprC ->
+--           pure exprC
+--         Right () ->
+--           evalFunc' tLevels
+
+
+handleThis
+
+
+so while it is true that we could have a this reference which refers to two possible cases,
+we can deterministically rule out the possibility of it being the inner AST if
+
+A) mInner == Nothing
+B) Just astI >>= lookupAST ["this"] == Nothing
+
+
+Also we cannot surprisingly enter nested functions
+
+eg:
+  iter() is a method
+
+some other method cannot do:
+
+  f() { x = iter } ; it must do:  f() { x = this.iter } 
+
+
+Although how would double nested 'this' work?
+
+
+-- -- | TODO(remove InObject)
+-- lookupASTs :: [Name] -> (Maybe JSAST, [MyAST], JSAST) -> Maybe (ExprAST a)
+-- lookupASTs (n:nameChain) (mInner, inters, global) =
+--   -- "this" -> case inObject of
+--   --   False -> lookupGlobal nameChain global --todo: as StateT
+--   --   True -> case mInner of
+--   --     Nothing -> Nothing
+--   --     Just astI -> lookupAST (n:nameChain) astI
+--   -- _ ->
+--   case mInner of
+--     Nothing -> -- we must be in global
+--       case inters of
+--         (x:xs) -> error "invalid handling of AST detected"
+--         [] -> lookupGlobal global 
+--     Just astI -> case lookupAST (n:nameChain) astI of
+--       Just e -> Just e 
+--       Nothing -> case getFirst $ First . (lookupAST (n:nameChain)) <$> inters of
+--         Just e -> Just e 
+--         Nothing -> lookupGlobal (n:nameChain) global
+
+type NameChain = [Name]
+lookupASTs :: MonadJS m => NameChain -> m (Maybe (ExprAST a))
+lookupASTs nameChain = do
+  (mInner, inters, global) <- getAST
+  case head nameChain == "this" of
+    True -> case mInner of
+      Nothing -> pure $ lookupAST nameChain global
+      Just astI -> case lookupAST nameChain astI of
+        Nothing -> pure $ lookupAST nameChain global
+        Just match -> pure $ Just match
+    False -> case mInner of
+      Just match -> pure $ Just match
+      Nothing -> case getFirst $ First . (lookupAST (n:nameChain)) <$> inters of
+        Just match' -> pure $ Just match'
+        Nothing -> pure $ lookupAST nameChain global 
+
+
+  -- case head nameChain == "this" of
+  --   True -> handleThis nameChain mArgs mChain
+  --   False -> -- normal rules apply 
+  --     case lookupASTs nameChain asts of
+  --       Nothing -> error $ "evalRef couldnt find: " <> (show nameChain)
+  --       Just exprC -> handleFoundLookup nameChain exprC mArgs
+
+  -- where
+  --   handleThis :: [Name]  {-(Ref a)-}
+  --              -> Maybe [Expr a]
+  --              -> Maybe (Ref a) 
+  --              -> m (ExprAST a)
+  --   handleThis nameChain mArgs mChain = do
+  --     asts@(mInnerScope, interScopes, global) <- getAST
+  --     let globalLook =
+  --           case lookupAST nameChain global of
+  --             Just exprC -> handleFoundLookup nameChain exprC mArgs
+  --             Nothing -> error $ "ref using 'this' keyword not found:" <> (show nameChain)
+  --     case mInnerScope of
+  --       Nothing -> globalLook -- is global
+  --       Just astI -> case lookupAST nameChain astI of
+  --         Just exprC -> handleFoundLookup nameChain exprC mArgs
+  --         -- just in normal function
+  --         -- TODO: check if 'this'  exists in astI (for testing sake really)
+  --         Nothing -> globalLook  
+
+
+-- | NOTE: fakeObject = { super : { f : function() {}, g : function() {} }, this : { x : 1}}
 evalRef :: Ref -> ExprAST a
 evalRef r@(Ref nameChain deps mArgs mChain) = do
   -- TODO: refactor
   asts@(mInnerScope, interScopes, global) <- getAST
-  case head nameChain == "this" of
-    True -> handleThis asts nameChain r 
-    False -> -- normal rules apply 
-      case lookupASTs nameChain asts of
-        Nothing -> error $ "evalRef couldnt find: " <> (show nameChain)
-        Just exprC -> handleFoundLookupNonChained
 
-  where
-    -- factoring out helper
-    handleFoundLookupNonChained :: Ref -> ExprAST a -> m (ExprAST a)
-    handleFoundLookupNonChained (Ref _ _ mArgs mChain) exprC = do
+  exprC <- lookupASTs nameChain
+  handleFoundLookup nameChain exprC mArgs 
+  
+  where 
+    
+    --handleFoundLookup :: Ref -> ExprAST a -> m (ExprAST a)
+    handleFoundLookup :: MonadJS m =>
+                         [Name]
+                      -> ExprAST a 
+                      -> Maybe [Expr a]
+                      -> Maybe (Ref a)
+                      -> m (ExprAST a)
+    handleFoundLookup nameChain exprC args mChain = -- (Ref nameChain _ mArgs mChain) exprC = 
       case mArgs of
         Nothing -> pure exprC  
-        Just args -> case exprC of
-          FuncAST f -> do
-            exprC <- evalFunc f args
-            chainExprMaybe exprC mChain
-          _ -> error "type error: applied args to non function"
-
-    evalChainedRef :: JSRecordC a -> Ref -> m (ExprAST a)
-    evalChainedRef jsRecordC (Ref nameChain deps mArgs mChain) = do
-      case lookupAST nameChain jsRecordC of
-        Nothing -> error "chain on non-existent property"
-        Just exprAST -> case mArgs of
-          Nothing -> pure exprAST
-          Just argsPassed -> case exprAST of
-            ClassAST _ -> error $ "not implemented, maybe no valid implementation here anyways(see comment)"
-                          <> "JS: Uncaught TypeError: Class constructor A cannot be invoked without 'new'"
-              -- would need to be preceded with new keyword, so idk if this
-              -- case will actually exist / is gonna be an error 
-            FuncAST (Function mName argNames tLevels) -> do
-              -- Objects need to be set up
-              let f' = (Function mName (ArgName "this" :argNames) tLevels)
-              let args' = (ValC (RecordC jsRecordC)) : argsPassed
-              exprC <- evalFunc f' args'
-              chainExprMaybe exprC mChain
-            _ -> error "type error: applied args to non function"
-
+        Just args -> do
+          let allButLast = Data.list.init nameChain
+          objectFrom <- lookupASTs allButLast 
+          (returned, this') <- tryApplyPropertyFunction objectFrom exprC args
+          -- cuz 'this' should only really return one level up
           
-    chainExprMaybe :: ExprAST a -> Maybe (Ref a) -> ExprAST a
+          putAST allButLast this'
+          chainExprMaybe returned mChain
+    
+    -- factoring out helper
+    tryApplyPropertyFunction :: MonadJS m =>
+                                JSRecordC a
+                             -> Maybe (Ref a)
+                             -> ExprAST a
+                             -> [Expr a]
+                             -> m (ExprAST a, JSRecordC a)
+    tryApplyPropertyFunction objectFrom mChain exprC args =
+      case exprC of
+        FuncAST (Function mName argNames tLevels) -> do
+          -- Objects need to be set up
+          let allButLast = Data.List.init 
+          let immediateObject = allButLast nameChain
+
+          -- | TODO(galen): What about when a propertyFunction calls another propertyFunction
+          -- | Then we don't change/nest in this and super otherwise we'll have
+          -- | this.this.x
+          let f' = (Function mName ((ArgName "this") : (ArgName "super") :argNames) tLevels)
+          let super = fromMaybe (JSRecordC []) $ lookupAST "super" objectFrom 
+          let args' = (ValC (RecordC objectFrom)) : ( super ) : argsPassed
+          evalFuncProperty f' args'
+          -- | TODO(galen): can this happen/what if nameChain == null? 
+          --putAST allButLast this'
+          --chainExprMaybe exprC mChain
+
+        ClassAST _ -> erroridcclass
+        _ -> error "type error: applied args to non function"
+
+    -- | we may need to run node in this case and with String
+    -- (function f() {}).name -> 'f'
+    chainExprMaybe :: ExprAST a -> Maybe (Ref a) -> m (ExprAST a)
     chainExprMaybe exprC = \case 
       Nothing -> pure exprC
       Just (chainRef :: Ref) -> case exprC of
         ValC (RecordC jsRecordC') -> evalChainedRef jsRecordC' chainRef
         Valc (StringC s) -> error "unimplemented" -- "".length()
         FuncAST f -> error "unimplemented"
-          -- | we may need to run node in this case and with String
-          -- TODO(galen): technically could a function fit here?
-          -- (function f() {}).name -> 'f'
-          -- TODO(galen): maybe this refactors to include ApplyFunc?
-
-          -- is this just number? 
         _ -> error "type error: applied chain to unchainable type"
+    
+    evalChainedRef :: JSRecordC a -> Ref -> m (ExprAST a)
+    evalChainedRef jsRecordC (Ref nameChain deps mArgs mChain) = do
+      case lookupAST nameChain jsRecordC of
+        Nothing -> error "chain on non-existent property"
+        Just exprAST ->
+--          handleFoundLookup nameChain 
+          case mArgs of
+            Nothing -> pure exprAST
+            Just argsPassed -> do
+              -- is impossible for 'this' here to affect global state
+              -- at least on this Statement; we could set a variable equal to the returned value
+              -- then it would have capacity to affect the ASTs  
+              (returned, _) <- tryApplyPropertyFunction nameChain mChain exprAST argsPassed
+              chainExprMaybe returned mChain 
 
-  
-    handleThis :: (Maybe MyAST, [MyAST], JSAST) -> [Name] -> (Ref a) -> m (ExprAST a)
-    handleThis (mInnerScope, interScopes, global) nameChain r = do
-      let globalLook =
-            case lookupAST nameChain global of
-              Just exprC -> handleFoundLookupNonChained r exprC
-              Nothing -> error $ "ref using 'this' keyword not found:" <> (show nameChain)
-      case mInnerScope of
-        Nothing -> globalLook -- is global
-        Just astI -> case lookupAST nameChain astI of
-          Just exprC -> handleFoundLookupNonChained r exprC
-          -- just in normal function
-          -- TODO: check if 'this'  exists in astI (for testing sake really)
-          Nothing -> globalLook  
-            
-            
-              
-  -- TODO(galen): make sure this makes sense regarding class 
-                      
 
-          
-        
+
       
       
       
@@ -671,8 +804,11 @@ evalRef r@(Ref nameChain deps mArgs mChain) = do
                     -- | Except since this may infinitely repeat, call evalRef which will call evalFunc
     
     
-
-
+erroridcclass = error $ "not implemented, maybe no valid implementation here anyways(see comment)"
+                <> "JS: Uncaught TypeError: Class constructor A cannot be invoked without 'new'"
+                -- would need to be preceded with new keyword, so idk if this
+                -- case will actually exist / is gonna be an error
+  
 evalScript :: MonadJS m => [JSTopLevel a] -> m JSAST
 evalScript = mapM_ evalTopLevel 
 
