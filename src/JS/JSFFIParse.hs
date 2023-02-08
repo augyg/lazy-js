@@ -112,7 +112,28 @@ v-- | TODO(galen): Condition comes packaged with the [Dependency]
   -- is like a mix of applyFunc and chain
   -- Solution: can chain on any expression (except for Number|undefined|Bool: JSValue = { Set:Object} | { Set:Obj } })
 
+
+-- TODO: functions as objects:
+
+   super()
+   super.f()
+   super.g() 
+
+(Name, Object)
+
+FROM: data JSObject a = JSObject [(Name, Expr a)] deriving (Show, Eq, Ord)
+TO:   data JSObject a = JSObject (Maybe Lambda) [(Name, Expr a)] deriving (Show, Eq, Ord)
+
+
+
+
 -}
+
+
+-- | The raw core of what a function is 
+data Lambda a = Lambda [ArgName a] [JSTopLevel a]
+data GenericObject a = GenericObject (Maybe Lambda) [(Name, Expr a)]  
+
 
 reservedKeywordsTODO = [ "break"
                        , "return"
@@ -215,6 +236,7 @@ data Fractional a => JSValue a = Number (JSNumber a)
                                | Array (JSArray a)
                                | Record (JSObject a)
                                | JSUndefined
+                               | NaN
                                deriving (Show, Eq, Ord) 
 
 jsValue :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSValue a)
@@ -225,6 +247,9 @@ jsValue =
   <|> (Boolean <$> jsBool)
   <|> (Array <$> jsArray) -- NOTE: this can be lazy cuz the parser will be lazy 
   <|> (Record <$> jsonjsObject)
+  <|> (JSUndefined <$ (try $ string "undefined"))
+  <|> (NaN <$ (try $ string "NaN"))
+      
 
 data JSArray a = JSArray [Expr a] deriving (Show, Eq, Ord) 
 jsArray :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSArray a)
@@ -349,7 +374,7 @@ jsArgTuple = do
       name <- jsValidName
       manyTill_ (char ' ') (char '=')
       many (char ' ')
-      v <- jsValue
+      v <- jsExpression
       pure $ ArgDef name v
 
     jsArgName = ArgName <$> jsValidName
@@ -716,7 +741,7 @@ whileLoop inFnScope = do
       pure $ WhileLoop headExpr statements
 
 -- | Arg is just meant to represent names for special scopes, not args passed in a statement
-data ArgName a = ArgName Name | ArgDef Name (JSValue a) deriving (Show, Eq, Ord)
+data ArgName a = ArgName Name | ArgDef Name (Expr a) deriving (Show, Eq, Ord)
 --data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSStatement] (Maybe (Return a))
 data Function a = Function (Maybe Name) [ArgName a] [JSTopLevel a] deriving (Show, Eq, Ord) 
 -- | Can only put to AST if we have a name for it 

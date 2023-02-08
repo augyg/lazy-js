@@ -86,8 +86,12 @@ data Link = Link Text -- TODO(galen): delete
 
 --    And note: var is the only of the three variable declarators that can actually destructively change
 
---    And note: (let x = x + 1) !== (x += 1) and you cant use += on a const 
+--    And note: (let x = x + 1) !== (x += 1) and you cant use += on a const
+
 -}
+
+
+
 
 -- | Inner AST for functions 
 type MyAST = JSAST
@@ -341,24 +345,95 @@ evalJSOp mMyOwnAST (JSOperation deps varDecl expr) = do
         -- | 2. call base constructor 
         
         where
-          nameF :: Function a -> (Name, Function a)
-          nameF f@(Function (Just methodName) args tLevs) = (methodName, f)
-          
-          foldMethods :: [[Method a]] -> [Method a]
-          foldMethods = foldr f
-          
-          f :: [Method a] -> [Method a] -> [(Name, Method a)]
-          f parent child =
+          -- data JSClass a = JSClass (Maybe Extends) (Maybe (Constructor a)) [Method a] deriving (Show, Eq, Ord)
+          createNewObject' :: JSClass -> [ExprAST a] -> m (JSRecordC a)
+          createNewObject' (JSClass mExtends mConstructor methods) args = do
+            let super = case mExtends of --if has extends then set super key
+                  Just (JSClass mExtends mConstructor methods) -> [("super", constructorToAST mConstructor)] 
+                  Nothing -> [] 
+            let superMethods = case mExtends of  -- by folding
+                  Just (JSClass mExtends mConstructor methods) -> [("super", fmap (nameF . coerceMethodToFunc) methods)]
+            
             let
-              parent' = nameF <$> parent
-              child' = nameF <$> child
-            in
+              thisMethods :: [(Name, ExprAST a)]
+              thisMethods = fmap (nameF . coerceMethodToFunc) methods
+              
+            (_, this) <- tryApplyPropertyFunction emptyJSRecord Nothing args
+            
+          
+          nameF :: Function a -> (Name, ExprAST a)
+          nameF f@(Function (Just methodName) args tLevs) = (methodName, FuncAST f)
+
+
+          
+          callsSuper :: [JSTopLevel a] -> Bool
+          callsSuper = any f
+            where
+              f :: JSTopLevel a -> Bool
+              f = \case
+                Control _ -> False
+                Return _ -> False
+                Break -> False 
+                Declare oo -> case oo of
+                  Function' _ -> False
+                  Class _ -> False
+                  Operation (JSOperation _ _ e) -> case e of
+                    ApplyFunc (Left "super") _ -> True -- only case lol
+                    _ -> False
+
+
+          
+
+
+
+          
+          runConstructor :: MonadJS m => Method a -> Maybe Extends -> m (JSRecordC a)
+          runConstructor (Method _ argNames tLevels) mExtends = do
+            case mExtends of
+              Nothing -> ""
+              Just parentName -> 
+                case callsSuper tLevels of
+                  True -> do  -- get super from parent and add this
+                    (JSClass mExtends (Method _ argNamesExt tLevelsExt methods)) <- lookupASTs parentName
+                    
+                  False -> "" -- simple
               
 
-        if we have an extends: put super as the parent constructor
 
-          or the constructor will have a list of top levels, we could simply just replace it with
-          the super 
+          
+          -- runConstructor :: MonadJS m => Method a -> Maybe Extends -> m (JSRecordC a)
+          -- runConstructor (Method _ argNames tLevels) = do
+          --   case extends of
+          --     Just parentName -> do
+          --       (JSClass mExtends mConstructor methods) <- lookupASTs parentName
+          --       case mConstructor of
+          --         Just constructor ->
+          --           addArgsToASTScope [ArgName "super"]
+                    
+          --         Nothing -> pure () 
+          --     Nothing -> 
+            
+
+          
+          -- | NOTE: one fold is the difference between this and super 
+            -- | so fold all but the last to get super
+            -- | then fold this with the last/immediate class to get 'this'
+            
+          foldMethods :: [[Method a]] -> Map Name (Method a)
+          foldMethods = foldr f mempty 
+          
+          f :: [Method a] -> [Method a] -> Map Name (Method a)
+          f parent child =
+            let
+              parent' = M.fromList $ nameF <$> parent
+              child' = M.fromList $ nameF <$> child
+            in
+              M.union child' parent' 
+
+        -- if we have an extends: put super as the parent constructor
+
+        --   or the constructor will have a list of top levels, we could simply just replace it with
+        --   the super 
         
 --         where
 --           -- Name results in a list of classes to fold, that can then be run as a function of sorts
@@ -528,6 +603,67 @@ evalJSOp mMyOwnAST (JSOperation deps varDecl expr) = do
             func <- getAST name
             evalFunc mMyOwnAST func argsPure
 
+zipArgs :: MonadJS m => [ArgNames] -> [ExprAST a] -> m [(Name,ExprAST a)]
+zipArgs [] _ = pure []
+zipArgs (argName:argNames) [] = case argName of
+  ArgName _ -> zipArgs argNames []
+  ArgDef name expr -> do
+    exprC <- evalExpr expr
+    liftA2 (:) (name,exprC) (zipArgs argNames [])
+zipArgs (argName:as) (exprC:exprCs) =
+  let
+    toName = \case { ArgName n -> n; ArgDef n _ -> n }
+  in
+    liftA2 (:) (toName argName, exprC) (zipArgs as bs)
+
+
+-- By this point we've already eval'd the expr args
+addArgsToASTScope :: [ArgName a] -> [ExprAST a] -> m ()
+addArgsToASTScope argNames exprs = do
+  -- exprCs <- mapM evalExpr exprs
+  let newAST = fromList $ zipArgs argNames exprCs
+  (mInner, inters, g) <- getAST
+  case mInner of
+    Just astI -> 
+      putAST (Just newAST, astI : inters, g) 
+    Nothing ->
+      case inters of
+        (x:xs) -> error "invalid function-scope state handling" 
+        [] -> --logical
+          putAST (Just newAST, [], g)
+          
+          
+  
+-- Allow infinite nesting without scoping inwards, instead just referring to the same 'this'
+addArgsToASTScopeThis :: [ArgName a] -> [ExprAST a] -> m ()
+addArgsToASTScopeThis argNames exprs = do
+  -- we definitely have super, it just may be empty
+  (mInner, inters, g) <- getAST
+  let args_@(("this", thisIn):("super": superIn):zipped) = zipArgs argNames exprs
+  case mInner of
+    Nothing ->
+      case inters of
+        (x:xs) -> error "invalid handling of state"
+        [] -> (fromList args, [], g)
+
+    Just (JSRecordC astI) -> do
+      -- let super = lookupAST ["super"] astI
+      -- let this = lookupAST ["this"] astI
+      let f = \k v -> k == "this" || k == "super"
+      let (mSuperThis, astI') = partitionWithKey f astI
+      case Map.lookup "this" mSuperThis of
+        Nothing -> putAST (Just $ fromList args_, astI: inters, g) 
+        Just this' -> do
+          -- this already exists, so add to it, prolly same with super
+          --partitionWithKey f
+          let unionThisSuper = \(ValC (JSRecordC thisOld)) (ValC (JSRecordC thisNew)) -> ValC (JSRecordC (union thisNew thisOld))
+          let astInnerNew = (unionWith unionThisSuper mSuperThis (fromList args))
+          putAST (astInnerNew, astI':inters, g)
+        
+      
+  
+  -- do just like above except check if 'this' entry exists in the astI before shuffling to a higher level
+    -- so only shift the astI if 'this' doesnt exist innit
 
 evalFunc :: Function a -> [ExprAST a] -> m (ExprAST a)
 evalFunc f@(Function mName argNames tLevels) argExprsPure = do
@@ -542,7 +678,7 @@ evalFunc f@(Function mName argNames tLevels) argExprsPure = do
 
 evalFuncProperty :: Function a -> [ExprAST a] -> m (ExprAST a, JSRecordC a)
 evalFuncProperty f@(Function mName argNames tLevels) argExprsPure = do
-  addArgsToASTScope argNames argExprsPure --mMyOwnAST
+  addArgsToASTScopeThis argNames argExprsPure --mMyOwnAST
   eithExprAST <- evalFunc'
   this <- getThis 
   removeDeclarationsFromScope 
@@ -729,40 +865,30 @@ evalRef r@(Ref nameChain deps mArgs mChain) = do
         Nothing -> pure exprC  
         Just args -> do
           let allButLast = Data.list.init nameChain
-          objectFrom <- lookupASTs allButLast 
-          (returned, this') <- tryApplyPropertyFunction objectFrom exprC args
-          -- cuz 'this' should only really return one level up
+          objectFrom <- lookupASTs allButLast
+          case exprC of
+            FuncAST f -> 
+              (returned, this') <- tryApplyPropertyFunction objectFrom f args
+              putAST allButLast this'
+              chainExprMaybe returned mChain
+
+            ClassAST _ -> erroridcclass
+            _ -> error "type error: applied args to non function"
           
-          putAST allButLast this'
-          chainExprMaybe returned mChain
-    
     -- factoring out helper
     tryApplyPropertyFunction :: MonadJS m =>
                                 JSRecordC a
-                             -> Maybe (Ref a)
-                             -> ExprAST a
+                             -> Function a 
                              -> [Expr a]
                              -> m (ExprAST a, JSRecordC a)
-    tryApplyPropertyFunction objectFrom mChain exprC args =
-      case exprC of
-        FuncAST (Function mName argNames tLevels) -> do
-          -- Objects need to be set up
-          let allButLast = Data.List.init 
-          let immediateObject = allButLast nameChain
-
-          -- | TODO(galen): What about when a propertyFunction calls another propertyFunction
-          -- | Then we don't change/nest in this and super otherwise we'll have
-          -- | this.this.x
-          let f' = (Function mName ((ArgName "this") : (ArgName "super") :argNames) tLevels)
-          let super = fromMaybe (JSRecordC []) $ lookupAST "super" objectFrom 
-          let args' = (ValC (RecordC objectFrom)) : ( super ) : argsPassed
-          evalFuncProperty f' args'
-          -- | TODO(galen): can this happen/what if nameChain == null? 
-          --putAST allButLast this'
-          --chainExprMaybe exprC mChain
-
-        ClassAST _ -> erroridcclass
-        _ -> error "type error: applied args to non function"
+    tryApplyPropertyFunction objectFrom f args = do 
+      -- | TODO(galen): What about when a propertyFunction calls another propertyFunction
+      -- | Then we don't change/nest in this and super otherwise we'll have
+      -- | this.this.x
+      let f' = (Function mName ((ArgName "this") : (ArgName "super") :argNames) tLevels)
+      let super = fromMaybe (JSRecordC []) $ lookupAST "super" objectFrom 
+      let args' = (ValC (RecordC objectFrom)) : ( super ) : argsPassed
+      evalFuncProperty f' args'
 
     -- | we may need to run node in this case and with String
     -- (function f() {}).name -> 'f'
