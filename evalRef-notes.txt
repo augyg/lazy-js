@@ -71,3 +71,29 @@
       -- Also based on the error: Uncaught TypeError: Cannot read properties of undefined (reading 'x')
          -- its very safe to say that '.p' means of returned, get property p NOT some second execution
          -- of the base object 
+
+
+
+  -- the best way to handle this is to completely deref an object upon instantiation (where this class def gets called)
+  --   at this time we have a name (or we dont and we just call the constructor with a fake name)
+  --   Once we have a name:
+  --     this.x --> name.x
+
+  -- so we should parse this class, create an object (where this still exists) then call deThis 
+
+
+
+--- OTHER NOTES
+
+
+
+
+
+--What if instead we had
+
+-- | For control ones, we don't need or even want to know dependencies at this level
+-- | For Functions and Classes we do special scoping where when we check dependencies
+-- | We first check if the function defined the var name
+  -- | And prefer the innermost scope (for multiple functions)
+  -- | (function (x) { var x = 2; return ((function(x){return x})(10))})(1) ---> Returns 10 NOT(2,1)
+  -- | `this` is a synonym for the outer object (?)

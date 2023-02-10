@@ -13,12 +13,13 @@ Does not handle Object.*(someObj, js) cases (of Type Update)
 
 module JS.JSFFIParse where
 
-import JS.Types (Name)
+import JS.Types
 import JS.Source
 import JS.MonadJS
 
 import Control.Applicative (some, liftA2, empty )
 import Text.Parsec
+import Data.Monoid (All(..))
 import Data.These
 import Data.Map (Map)
 import Data.Text (Text)
@@ -124,15 +125,10 @@ v-- | TODO(galen): Condition comes packaged with the [Dependency]
 FROM: data JSObject a = JSObject [(Name, Expr a)] deriving (Show, Eq, Ord)
 TO:   data JSObject a = JSObject (Maybe Lambda) [(Name, Expr a)] deriving (Show, Eq, Ord)
 
-
+-- Ternary OP: x ? x : y
 
 
 -}
-
-
--- | The raw core of what a function is 
-data Lambda a = Lambda [ArgName a] [JSTopLevel a]
-data GenericObject a = GenericObject (Maybe Lambda) [(Name, Expr a)]  
 
 
 reservedKeywordsTODO = [ "break"
@@ -168,13 +164,6 @@ reservedKeywordsTODO = [ "break"
 --   withJS [name1, name2] $ \(x:x2) -> 
 
 
-type RawJS = JS
-
-type Dependency = Name
-
-type Condition a = Expr a
---data Condition = Condition RawJS
-
 
 sspace :: Stream s m Char => ParsecT s u m [Char]
 sspace = many (char ' ') 
@@ -195,15 +184,13 @@ between' open close inside = do
   open
   (x, _) <- manyTill_ inside close
   pure x
- 
 
-jsString :: Stream s m Char => ParsecT s u m JSString
+jsString :: Stream s m Char => ParsecT s u m JSString'
 jsString = do
   str <- between' (char '\'') (char '\'') anyChar <|> (between' (char '\"') (char '\"') anyChar) 
   pure $ JSString str
 
 -- | TODO(galen): parse as scientific 
-data Fractional a => JSNumber a = JSNumber a deriving (Show, Eq, Ord)  
 jsNumber :: (Num a, Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSNumber a)
 jsNumber = do
   whole <- some digit
@@ -215,11 +202,10 @@ jsNumber = do
   pure . JSNumber $ read (whole <> decii)
 
 
-data JSBool = JSBool Bool deriving (Show, Eq, Ord)
+
 jsBool :: Stream s m Char => ParsecT s u m JSBool
 jsBool = JSBool <$> ((True <$ string "true" ) <|> (False <$ string "false"))
 
-data JSNull = JSNull deriving (Show, Eq, Ord)
 jsNull :: Stream s m Char => ParsecT s u m JSNull
 jsNull = JSNull <$ string "null"
 
@@ -227,17 +213,6 @@ manyTill_ :: ParsecT s u m a -> ParsecT s u m end -> ParsecT s u m ([a], end)
 manyTill_ p end = go
   where
     go = (([],) <$> end) <|> liftA2 (\x (xs, y) -> (x : xs, y)) p go
-
-
-data Fractional a => JSValue a = Number (JSNumber a)
-                               | String' JSString
-                               | Null JSNull
-                               | Boolean JSBool
-                               | Array (JSArray a)
-                               | Record (JSObject a)
-                               | JSUndefined
-                               | NaN
-                               deriving (Show, Eq, Ord) 
 
 jsValue :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSValue a)
 jsValue = 
@@ -249,18 +224,10 @@ jsValue =
   <|> (Record <$> jsonjsObject)
   <|> (JSUndefined <$ (try $ string "undefined"))
   <|> (NaN <$ (try $ string "NaN"))
-      
 
-data JSArray a = JSArray [Expr a] deriving (Show, Eq, Ord) 
 jsArray :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSArray a)
 jsArray = do
-  fmap JSArray $ between1 (char '[') (char ']') $ sepBy jsExpression (char ',')
-
--- | TODO(galen): VALID:  var xn = { f() { return 1}, g() {}, a:1 }
-  -- | Because of being an object
--- | TODO(galen): NOTE: for a: x += 1 or  a: x = 1  console.log (<obj>.a) --> x+1 or 1
-data JSObject a = JSObject [(Name, Expr a)] deriving (Show, Eq, Ord)
-data Method a = Method Name [ArgName a] [JSTopLevel a] deriving (Show, Eq, Ord)
+  fmap (JSArray . (fmap fst)) $ between1 (char '[') (char ']') $ sepBy jsExpression (char ',')
 
 
 
@@ -287,36 +254,34 @@ data Method a = Method Name [ArgName a] [JSTopLevel a] deriving (Show, Eq, Ord)
 --     return object 
 --   }
 
-newObjectOfClass = do
-  object <- makeEmptyObject 
-  declareMethods `in'` object 
-  object' <- runConstructor object
+-- newObjectOfClass = do
+--   object <- makeEmptyObject 
+--   declareMethods `in'` object 
+--   object' <- runConstructor object
 
 
-  ... in JSOperation (assuming is named) 
-  putAST object' 
+--   ... in JSOperation (assuming is named) 
+--   putAST object' 
 
-data JSObject a = JSObject [(Name, Expr a)] deriving (Show, Eq, Ord) 
 
-data JSObject a = JSObject [(Name, ObjectOriented a)] deriving (Show, Eq, Ord)
 jsonjsObject :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSObject a)
 jsonjsObject = do
   -- effectively json with functions
   fmap JSObject $ between1 (char '{') (char '}') $ sepBy (try keyAndValue <|> (coerceMethod <$> method)) (inSpace $ string ",")
   where
-    -- Via an alternative way to define the function control flow 
-    coerceMethod :: Method a -> (Name, ObjectOriented a)
-    coerceMethod (Method n args stmts) = (n, Function' $ Function (Just n) args stmts)
 
-    keyAndValue :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, (Expr a, [Dependency]))
+    keyAndValue :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Name, Expr a)
     keyAndValue = do
       n <- jsValidName
       inSpace $ string ":"
-      v <- jsExpression -- but this can also be more : class and function
-      pure (n,expr)
+      expr <- jsExpression -- but this can also be more : class and function
+      pure (n,fst expr) -- cuz we will be deprecating Deps 
 
     -- | A method is a special function that can be used in objects and object templates (classes)
-
+        -- Via an alternative way to define the function control flow 
+    coerceMethod :: Method a -> (Name, Expr a)
+    coerceMethod (Method n args stmts) = (n, FuncAsExpr $ Function (Just n) args stmts)
+    
     method :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (Method a)
     method = do
       n <- jsValidName
@@ -333,19 +298,19 @@ jsonjsObject = do
 -- oneExpr 
   
 
-oneObject :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (ObjectOriented a)
-oneObject = do
-  (Function' <$> (try jsFunction))
-  <|> (Class <$> (try jsClass))
-  <|> (Operation <$> jsOperation')
+-- oneObject :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (ObjectOriented a)
+-- oneObject = do
+--   (Function' <$> (try jsFunction))
+--   <|> (Class <$> (try jsClass))
+--   <|> (Operation <$> jsOperation')
 
-  where jsOperation' = do
-          o <- jsOperation
-          case o of
-            [] -> parserFail "this should never happen"
-            x:[] -> pure x
-            (x:y:xs) -> parserFail "not accepted here"
---singularRawExpression 
+--   where jsOperation' = do
+--           o <- jsOperation
+--           case o of
+--             [] -> parserFail "this should never happen"
+--             x:[] -> pure x
+--             (x:y:xs) -> parserFail "not accepted here"
+-- --singularRawExpression 
 
 
 
@@ -353,12 +318,6 @@ oneObject = do
 
 between1 :: Stream s m Char => ParsecT s u m open -> ParsecT s u m end -> ParsecT s u m a -> ParsecT s u m a 
 between1 open end match = open *> match <* end
-
-
-
-
-  
-
     
 jsArgTupleInput :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [(Expr a, [Dependency])]
 jsArgTupleInput = do
@@ -367,21 +326,15 @@ jsArgTupleInput = do
 jsArgTuple :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [ArgName a]
 jsArgTuple = do
   char '(' *> sepBy (jsArgName <|> withDefaultArg) (char ',') <* char ')'
-      
-      
   where
     withDefaultArg = do
       name <- jsValidName
       manyTill_ (char ' ') (char '=')
       many (char ' ')
       v <- jsExpression
-      pure $ ArgDef name v
+      pure $ ArgDef name $ fst v -- cuz we are deprecating Deps 
 
     jsArgName = ArgName <$> jsValidName
-      
-
---jsOperation = jsStatement
-
 
 -- | All the control flows which take a Bool should be set to False 
 jsTopLevelStatement :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSTopLevel a)
@@ -389,7 +342,6 @@ jsTopLevelStatement =
   (Control' <$> (control False))
   <|> (Declare <$> (Function' <$> (try jsFunction) <|> (Class <$> (try jsClass))))
   where
-    
     control :: (Fractional a, Read a, Stream s m Char) => Bool -> ParsecT s u m (Control a)
     control inFnScope =
       (While <$> (try $ whileLoop inFnScope))
@@ -398,38 +350,6 @@ jsTopLevelStatement =
       <|> (TryExcept <$> (try $ tryExceptFinally inFnScope))
       <|> (IF <$> (try $ ifStatement inFnScope) )
 
---  <|> (Return <$> ())
-  -- BREAK?
-  
--- -- | Any top level piece that must be run altogether for actual use and desired behavior
--- -- | All of these 5 cases may recurse into each other 
--- jsTopLevelStatement :: Stream s m Char => ParsecT s u m a
--- jsTopLevelStatement =
---   -- By design all statements which start with keywords are run first since this gives the greatest integrity
---   -- the inspo for this is that anon functions may be named
---   -- eg: var x = function (<name> | "")(x,y,z) {..}
---   -- and this <name> is not available at top level 
---   jsFunction
---   <|> whileLoop
---   <|> forLoop
---   <|> objectDeclaration -- https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes
---   <|> (jsOperation undefined)
-
--- | TEST: with JSDOM object
-
--- PLACEHOLDER
---type Method = String -- Function
-
-
-
-
-  
-  
-
-
-type Constructor = Method
-type Extends = Dependency
-data JSClass a = JSClass (Maybe Extends) (Maybe (Constructor a)) [Method a] deriving (Show, Eq, Ord)
 jsClass :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSClass a)
 jsClass = do
   -- Verified: methods will share state
@@ -449,14 +369,6 @@ jsClass = do
   char '}'
 
   pure $ JSClass mClassName mExtends mConstr methods
-
-  -- the best way to handle this is to completely deref an object upon instantiation (where this class def gets called)
-  --   at this time we have a name (or we dont and we just call the constructor with a fake name)
-  --   Once we have a name:
-  --     this.x --> name.x
-
-  -- so we should parse this class, create an object (where this still exists) then call deThis 
-  
   where
     constructor = do
       string "constructor"
@@ -476,57 +388,7 @@ jsClass = do
     prefix = todo 
     -- methodWithMaybeClassPrefixes = do
     --   optionMaybe 
-
 data Prefix 
-
--- | Replace all 'this' with name of Object 
-deThis :: JSObject a -> JSObject a
-deThis = undefined
--- -- | Specifically for LHS of '='    
--- innerPropValue = do
-  
-
-
--- | This is actually recursive:
--- | Object [("name", Object [("name2", "1")])] --> name.name2 = 1
-type ObjectName = Name -- of the whole thing, top reference
-data ObjectDataType a = Object'' ObjectName (Map Name (Either (JSValue a) (Expr a))) deriving (Show, Eq, Ord)
--- | let x = new SomeClass ()
-
-
-type InFnScope = Bool
-
-
-
-
---What if instead we had
-
--- | For control ones, we don't need or even want to know dependencies at this level
--- | For Functions and Classes we do special scoping where when we check dependencies
--- | We first check if the function defined the var name
-  -- | And prefer the innermost scope (for multiple functions)
-  -- | (function (x) { var x = 2; return ((function(x){return x})(10))})(1) ---> Returns 10 NOT(2,1)
-  -- | `this` is a synonym for the outer object (?)
-  
-data JSTopLevel a = Control' (Control a)
-                  | Declare (ObjectOriented a)
-                  | Return (Expr a) -- Weird case --TODO
-                  | Break -- another weird case
-                  deriving (Show, Eq, Ord)
--- throw, return, break 
-                  
-data Control a = While (WhileLoop a)
-               | For (ForLoop a){-todo:(ForLoop a) -}
-               | IF (IFStatement a)
-               | Switch (SwitchStatement a)
-               | TryExcept (TryExceptFinally a)
-               deriving (Show, Eq, Ord)
-               -- | Return 
-
-data ObjectOriented a = Function' (Function a)
-                      | Class (JSClass a)
-                      | Operation (JSOperation a) -- TODO make this singular again
-                      deriving (Show, Eq, Ord)
 
 returnStatement :: Stream s m Char => ParsecT s u m (JSTopLevel a)
 returnStatement = undefined
@@ -562,10 +424,6 @@ allowedStatementControl' inFnScope =
 -- for (let i = 0; i < 5; i++) {
 --     console.log(i)
 -- }
-
--- | TODO(galen): Technically the 2nd datatype of ForHead should be expressions seperated
-type ForHead a = (Maybe [JSOperation a], (Condition a, [Dependency]), Maybe [JSOperation a]) 
-data ForLoop a = ForLoop (ForHead a) [JSTopLevel a] deriving (Show, Eq, Ord)
 forLoop :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (ForLoop a)
 forLoop inFnScope = do
   triplet <- forHead
@@ -599,7 +457,6 @@ forLoop inFnScope = do
 -- | Control is in the haskell context and expression is in the JS context
 
 -- | TODO(galen): Condition comes packaged with the [Dependency]
-data IFStatement a = IFStatement [((Condition a, [Dependency]), [JSTopLevel a])] deriving (Show, Eq, Ord)
 -- in order
 ifStatement :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (IFStatement a)
 ifStatement inFnScope = do
@@ -640,9 +497,7 @@ ifStatement inFnScope = do
 --   default:
 --     // code block
 -- }
-type DefaultCase a = Maybe [JSTopLevel a] 
-data SwitchStatement a = SwitchStatement (Expr a, [Dependency]) [(JSValue a, [JSTopLevel a])] (DefaultCase a)
-  deriving (Show, Eq, Ord)
+
 switchStatement :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (SwitchStatement a)
 switchStatement inFnScope = do
   -- blocks must end with break EXCEPT For default
@@ -685,14 +540,6 @@ parseThese this that = do
       Just likeThat -> pure $ That likeThat
       Nothing -> parserFail "neither found of These" 
   
-
--- | Must be run with runJSWithCliErr (although we might as well use this for all) 
--- | IMPORTANTE!!! All try excepts should be strict for the try block
-type TryBlock a = [JSTopLevel a]
-type Catch a = (Maybe Dependency, [JSTopLevel a]) -- dependency is the err name
-type Finally a = [JSTopLevel a]
-type CatchFinally a = These (Catch a) (Finally a)
-data TryExceptFinally a = TryExceptFinally (TryBlock a) (CatchFinally a) deriving (Show, Eq, Ord)
 tryExceptFinally :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (TryExceptFinally a)
 tryExceptFinally inFnScope = do
   -- Seems that you must have at least one of the two of catch or finally and try is demanded
@@ -720,7 +567,7 @@ tryExceptFinally inFnScope = do
 
 --whileLoop inFnScope = undefined
 
-data WhileLoop a = WhileLoop (Condition a, [Dependency]) [JSTopLevel a] deriving (Show, Eq, Ord)
+
 whileLoop :: (Fractional a, Read a, Stream s m Char) => InFnScope -> ParsecT s u m (WhileLoop a) 
 whileLoop inFnScope = do
   (try normal) <|> doWhile
@@ -739,12 +586,6 @@ whileLoop inFnScope = do
       many (char ' ')
       headExpr <- between1 (char '(') (char ')') jsExpression
       pure $ WhileLoop headExpr statements
-
--- | Arg is just meant to represent names for special scopes, not args passed in a statement
-data ArgName a = ArgName Name | ArgDef Name (Expr a) deriving (Show, Eq, Ord)
---data Function a = Function (Maybe Name) [ArgName a] [Dependency] [JSStatement] (Maybe (Return a))
-data Function a = Function (Maybe Name) [ArgName a] [JSTopLevel a] deriving (Show, Eq, Ord) 
--- | Can only put to AST if we have a name for it 
 
 -- | 
 -- Function
@@ -944,64 +785,18 @@ jsFunction = do
 -- we've been using and in the case of no return statement (which may be a **conditionally desired result)
 -- then this means x should be undefined
 
-
--- | PSEUDO!
-data AST = AST (Map Name ObjectType)
-data ObjectType = Function'''
-                | Object' 
-                | NamedValue
-                | ClassDefinition 
--- | PSEUDO!
--- | 
-
--- | Note that for Objects with functions, we have to handle these in a 
-
-data Expr'' a = Val'
-              -- | -- reference turns into val or function 
-              -- |
-
-data ExprRef = Func'      -- -> Add to AST
-             | ApplyFunc' -- -> Get
-             | ObjectNew -- -> Get Class from AST >>= Add to AST 
-             | ObjectRef' -- -> Get from AST, maybe apply? 
-             
-
--- | Note: If a function is called to set some variable 'y' and that function performs an 'internal'-side-effect
--- | on some variable 'x', if we run the operation 'let y = somefunc()' then x will receive the effect at this time
--- Anything which can be named 
-data Expr a = Val (JSValue a)
-            | Reference (Ref a) -- decl. function app and/or object reference
-            | FuncAsExpr (Function a)
-            | ClassAsExpr (JSClass a) 
-            | ApplyFunc (Either Name (Function a)) [Expr a] -- inline funcs + ones in the AST
-            | New Name [Expr a]
-            -- | TODO: New (Expr a) [Expr a] because: new {a : class {} }.a(1)
-            -- | and: new (class A {})()
-            | Op Operator (Expr a) (Expr a)
-            --  This Chain -- valid globally
-            -- SHOULD WE HAVE NEXT? 
-            -- | PureOp Operator (Expr a) (Expr a)
-            -- the only thing that can definitively be pure is a PureOp where we have purified
-            -- (this technically means that we could make all functions pure, but only at certain points
-            -- and so therefore why would we keep it as a function - which represents an Op + SideEffects on
-            -- global state?) 
-            deriving (Show, Eq, Ord)
-            -- var a = function f(x) { ... }
-            -- note that f is not defined 
-
 -- | Although function and class definitions that depend on state are in a sense
 -- | unchanging, and will use the 'asked' state at the time of their application
-isPure :: Expr a -> Bool
-isPure = \case
-  Val _ -> True
-  PureOp _ -> True
-  Op _ -> False
-  _ -> False 
+-- isPure :: Expr a -> Bool
+-- isPure = \case
+--   Val _ -> True
+--   Op _ _ _ -> False
+--   _ -> False 
 
 -- | TODO(galen): should this be a smart constructor?
 -- | This is for testing purposes
 -- | If true, can live in state 
-isUnaffectedByState :: Expr a -> Bool
+isUnaffectedByState :: (Fractional a, Read a) => Expr a -> Bool
 isUnaffectedByState = \case
   Val v -> isValuePure v
   -- PureOp _ _ _ -> True
@@ -1018,13 +813,7 @@ isUnaffectedByState = \case
           Boolean _ -> True
           Array (JSArray exprs) -> getAll . mconcat $ fmap (All . isUnaffectedByState) exprs
           Record (JSObject nvPairs) -> getAll . mconcat $ fmap (All . isUnaffectedByState . snd) nvPairs
-          JSUndefined _ -> True 
-
---data Function a = Function (Maybe Name) [ArgName a] [Dependency] [Statement]
-
-
-jsBracketed :: ParsecT s u m ()
-jsBracketed = undefined
+          JSUndefined -> True 
 
 -- | TODO: new {a : class {} }.a(1)
 -- | TODO(galen): {a:1}["a"] AND [1,2,3][2] 
@@ -1093,14 +882,6 @@ ref = do -- Ref <$> jsValidRef <*> (inSpace $ optionMaybe jsArgTupleInput) <*> (
       pure $ Ref r [] Nothing Nothing
 
 
--- | We could eval with a trick
--- | return x --> let returned = x --> (runChained returned : returned.f() ) 
-data Ref a = Ref [Name] [Dependency] (Maybe (RefArgs' a)) (Maybe (Ref a)) deriving (Show,Eq, Ord)
-
-type RefArgs a = [(Expr a, [Dependency])]
-type RefArgs' a = [Expr a] -- cuz we've extracted the deps for the ref 
-
-
 --data DotRef a = Property Name | Fn (Function a) deriving (Show, Eq, Ord)
 --data Ref' a = Prop Name | FnCall Name [(Expr a, [Dependency])] deriving (Show, Eq, Ord)
 -- | New Idea:
@@ -1151,30 +932,6 @@ someOperator =
     shift = (try $ string ">>") <|> (try $ string "<<") <|> (try $ string ">>>")
 
 
--- | For eval of AssignOp,
--- | state1 >>= \x -> assignF y x
--- | except for A_Equal : state1 >>= \_ -> y
--- |   where y :: Expr
--- |
--- | ACTUALLY MAYBE: we can just check where 
-data AssignOp = A_Equal -- set to 
-              | A_Plus
-              | A_Subtract
-              | A_Multiply
-              | A_Divide
-              | A_Modulo
-              | A_Exponentiation
-              | A_LShift -- <<=
-              | A_RShift -- >>= (JS)
-              | A_UnsignedRShift
-              | A_ANDB
-              | A_XORB --- ^=
-              | A_ORB
-              | A_AND
-              | A_OR
-              | A_Nullish
-              deriving (Show, Eq, Ord)
-
 assignmentOp :: Stream s m Char => ParsecT s u m AssignOp
 assignmentOp = do
   (A_Equal <$ string "=")
@@ -1206,39 +963,13 @@ assignmentOp = do
 --     someValueWHNF <- jsOperation
     
 
-type Expr' a = (Expr a, [Dependency])
+
 --data [] a = [] | a : []
 --data Op = Op Operator Expr' Expr'
 -- TODO(galen): combine with Expr so that this can be a recursively defined type
   -- OpConstructor Operator Op Op 
 
 
-
--- Note that these can literally pair with any two JS Values 
-data Operator = Multiply
-              | Plus
-              | Subtract
-              | Exponentiation
-              | Division
-              | Modulo
-              | Equal -- (==)
-              | EqualSameType  -- (===)
-              | NotEqual
-              | NotEqualOrNotSameType
-              | GreaterThan
-              | LessThan
-              | LessOrEqual
-              | GreaterOrEqual
-              | Ternary -- ? ~~ isTrue
-              | AND
-              | OR
-              | NOT
-              | ANDB
-              | ORB
-              | NOTB
-              | XORB
-              | Shift String
-              deriving (Show, Eq, Ord)
 
 -- | Is an Operation as expressed to an expression because of 
 jsIterator :: Stream s m Char => ParsecT s u m (JSOperation a)
@@ -1309,23 +1040,6 @@ varType :: Stream s m Char => ParsecT s u m (Name -> VarDecl)
 varType = 
   (Let <$ (try $ string "let")) <|> (Var <$ (try $ string "var")) <|> (Const <$ (try $ string "const"))
 
-
--- | We know that the first 3 cases will be the A_Equal op if we were to bind AssignOp to these cases as well
--- | since that's only legal
-data VarDecl = Let Name
-             | Var Name
-             | Const Name
-             | Raw AssignOp [Name]
-             deriving (Show, Eq, Ord)
--- | And I could still use Maybe to represent Raw Expressions
-  -- Just  --> Updates AST
-  -- Nothing --> 'run's but no variable set/assigned (may perform side effects --> (globals | IO) )
-      -- NOTE: if there's no deps for a function (if we track) then we can see if local AST is affected upfront
-      -- But why would that ever exist?
-
--- | TODO: z = t = u = 1
-data JSOperationV2 a = JSOperationV2 [Dependency] (Maybe (VarType, [Name], AssignOp)) (Expr a)
-data JSOperation a = JSOperation [Dependency] (Maybe VarDecl) (Expr a) deriving (Show, Eq, Ord)
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
 jsOperation :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m [JSOperation a]
 jsOperation  = do
@@ -1613,12 +1327,12 @@ objectDeclaration = undefined
 
 
 
-parseStatement :: Text -> Statement
-parseStatement = undefined
+-- parseStatement :: Text -> Statement
+-- parseStatement = undefined
 
---Map Name JSValue 
-execJS :: MonadJS m => [JSStatement'] -> m () 
-execJS = do undefined
+-- --Map Name JSValue 
+-- execJS :: MonadJS m => [JSStatement'] -> m () 
+-- execJS = do undefined
   
   -- |case js of
      -- Runnable -> do runJSWithCli =<< (substitute js) <$> get 
@@ -1630,29 +1344,29 @@ execJS = do undefined
 
 ---------HIGHLIGHTS - Mayve Compilable ?--------------------------------------------------------------------------
 
-data Statement = Statement [Dependency] (Maybe Name) JS
-data JSStatement' =
-  WhileLoop' [Dependency]
-  | ForLoop' [Dependency] RawJS -- note that multiple 'lets' could be used
-  --		 | CaseStatement (Map Condition RawJS) -- would also need ?: syntax
-  | Function'' Name RawJS
-  | ObjectDeclaration Name RawJS
-  | Exec JSExpression -- in current top level as raw statement, no assignment
-  | VarAssign Name JSExpression -- this could be an empty expression
-  | Iterator  
+-- data Statement = Statement [Dependency] (Maybe Name) JS
+-- data JSStatement' =
+--   WhileLoop' [Dependency]
+--   | ForLoop' [Dependency] RawJS -- note that multiple 'lets' could be used
+--   --		 | CaseStatement (Map Condition RawJS) -- would also need ?: syntax
+--   | Function'' Name RawJS
+--   | ObjectDeclaration Name RawJS
+--   | Exec JSExpression -- in current top level as raw statement, no assignment
+--   | VarAssign Name JSExpression -- this could be an empty expression
+--   | Iterator  
 
--- this is derived from stream editing 
-data JSExpression = JSExpr [Dependency] RawJS 
-
-
-data JSValue' = JSValue' JSStatement' [Update]
-
-data Update = Reassign JSExpression
-            | Iterate JSStatement'
+-- -- this is derived from stream editing 
+-- data JSExpression = JSExpr [Dependency] RawJS 
 
 
-data ExprPiece = ExprPiece String 
--- jsSetValue :: ParsecT s u m ((Name, [Dependency], [ExprPiece])) 
+-- data JSValue' = JSValue' JSStatement' [Update]
+
+-- data Update = Reassign JSExpression
+--             | Iterate JSStatement'
+
+
+-- data ExprPiece = ExprPiece String 
+-- -- jsSetValue :: ParsecT s u m ((Name, [Dependency], [ExprPiece])) 
 -- jsSetValue = do
 --    manyLeftSide
 --    maybeParse (assignmentOperator >> expression) 
@@ -1660,8 +1374,7 @@ data ExprPiece = ExprPiece String
 --    where assignmentOperator = char '='
 --                             <|> (otherOperator >> (char '='))
 
-data JSString = JSString String deriving (Show, Eq, Ord)
-data JSTuple = JSTuple [JSString] 
+--data JSString = JSString String deriving (Show, Eq, Ord)
 
 
 

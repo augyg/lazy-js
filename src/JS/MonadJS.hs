@@ -7,7 +7,7 @@ import qualified Data.Map as M
 import Data.Text 
 
 import JS.Source
-import JS.Types (JSVal, Name)
+import JS.Types 
 
 
 {-
@@ -61,9 +61,13 @@ type Html = String
 
 class Monad m => MonadJS m where
   runJS' :: JS -> m () -- Update is in state 
-  getAST :: m JSAST
-  putAST :: JSAST -> m ()
-  setsAST :: Name -> String -> m ()
+  getAST :: m (FullAST a)
+  putAST :: (FullAST a) -> m ()
+  putNewEntryAST :: [Name] -> ExprAST a -> m ()
+  modifyEntryAST :: [Name] -> ExprAST a -> m ()
+  enterFunction :: m () -- todo: will also have merge 'this' logic with normal cases
+  exitFunction :: m ()  -- todo: will also have merge 'this' logic with normal cases
+  --setAST :: Name -> String -> m ()
   {-# MINIMAL getAST, putAST #-}
 
 
@@ -77,13 +81,13 @@ class HasJSState s where
 
   
   
-instance HasJSState (MyAST, [MyAST], JSAST)
-instance HasJSState ([MyAST], JSAST)
-instance HasJSState JSAST 
+-- instance HasJSState (MyAST, [MyAST], JSAST)
+-- instance HasJSState ([MyAST], JSAST)
+-- instance HasJSState JSAST 
 
-instance HasJSState (Maybe MyAST, [MyAST], JSAST)
+--instance HasJSState (Maybe (MyAST a), [MyAST a], JSAST a)
 
-instance MonadJSState state => MonadJS (JST state) where
+--instance MonadJSState state => MonadJS (JST state) where
   
 
 getsAST :: (MonadJS m, FromJSON a) => Name -> m a
@@ -104,16 +108,16 @@ orderJS = undefined
 resetSomeJS :: MonadJS m => M.Map String String -> m ()
 resetSomeJS = undefined
 
--- | TL;DR: This is a way to build a deterministic outSet
--- | ... which we can build with a Map of key values from the last run
-data JSAST' = JSAST' { inSet :: M.Map Name JSVal -- could include dom = ... 
-                     -- , outSet :: [Name]
-                     , script' :: JS
-                     -- ^ FunctionDeclarations data type is really a subcategory of this
-                     -- ^ this just is meant to rep that as well as setting variables
-                     -- ^ although we could run function declaractions
-                     -- ^ or make a Module data structure 
-                     }
+-- -- | TL;DR: This is a way to build a deterministic outSet
+-- -- | ... which we can build with a Map of key values from the last run
+-- data JSAST' = JSAST' { inSet :: M.Map Name JSVal -- could include dom = ... 
+--                      -- , outSet :: [Name]
+--                      , script' :: JS
+--                      -- ^ FunctionDeclarations data type is really a subcategory of this
+--                      -- ^ this just is meant to rep that as well as setting variables
+--                      -- ^ although we could run function declaractions
+--                      -- ^ or make a Module data structure 
+--                      }
 
 
 
@@ -123,19 +127,19 @@ data JSAST' = JSAST' { inSet :: M.Map Name JSVal -- could include dom = ...
 
 -----------------------------------------------------------------------------
 -- | In order for a
-type JSAST = JSRecordC
-type MyAST = JSAST
-type JSGlobal = (Maybe MyAST, [MyAST], JSAST)
-newtype JST m a = JST { runJST :: StateT JSGlobal (ExceptT JSError m) a }
+-- type JSAST = JSRecordC
+-- type MyAST = JSAST
+type FullAST a = (Maybe (MyAST a), [MyAST a], JSAST a)
+newtype JST m a = JST { runJST :: StateT (FullAST a) (ExceptT JSError m) a }
 
 -- | TODO(Galen): add in forall m. MonadIO m => m
-newtype JSDomT m a = JSDomT { runJSDomT :: StateT (Html, JSAST) (ExceptT JSError m) a }
+newtype JSDomT m a = JSDomT { runJSDomT :: StateT (Html, JSAST a) (ExceptT JSError m) a }
 
 --newtype MonadJS' a = MonadJS' a
 
 -- | We could also just only parse when we need to get back into the haskell context
 -- | I dont know if I need the reader part
-newtype MonadJST m a = MonadJST { runMonadJS :: StateT JSAST m a } 
+newtype MonadJST m a = MonadJST { runMonadJS :: StateT (JSAST a) m a } 
 -----------------------------------------------------------------------------
 
 -----------------------------------------------------------------------------
