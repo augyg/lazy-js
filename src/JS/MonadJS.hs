@@ -137,6 +137,7 @@ resetSomeJS = undefined
 -- type JSAST = JSRecordC
 -- type MyAST = JSAST
 type FullAST a = (Maybe (MyAST a), [MyAST a], JSAST a)
+type JSError = String
 newtype JST num m a = JST { runJST :: ExceptT JSError (StateT (FullAST num) m) a }
   deriving (Functor, Applicative, Monad, MonadException)
 
@@ -172,7 +173,7 @@ newtype MonadJST m a = MonadJST { runMonadJS :: StateT (JSAST a) m a }
 -----------------------------------------------------------------------------
 
 -----------------------------------------------------------------------------
-type JSError = String
+
 -- data Fail = Fail { url :: Link
 --                  , html :: Html
 --                  } deriving (Show) --- , Generic)

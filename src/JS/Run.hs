@@ -21,6 +21,7 @@ import Control.Monad (when)
 import Control.Applicative (some, liftA2)
 import Language.Haskell.TH (recover)
 import Data.Monoid (First(..))
+import Data.These (These(..))
 import Data.Either (isRight)
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Map as M
@@ -34,8 +35,15 @@ import System.Exit (ExitCode)
 import Data.Text.IO (hPutStr)
 import qualified Data.List
 
+import Control.Monad.Exception
+
 data Link = Link Text -- TODO(galen): delete
- 
+
+data JSError' = JSError' String deriving Show
+
+instance Exception JSError'
+
+  
 {-|
 
 GOAL: keep jsExpression parser as is, and convert
@@ -172,7 +180,7 @@ lookupGlobal = lookupAST
 --       [] -> Just v
 --       xs -> case v of
 --         ValC (RecordC kv) -> lookupAST nChain (RecordC kv)
---         _ -> Nothing -- TODO(galen): better error handling 
+--         _ -> Nothing -- TODO(galen): better throw $ JSError' handling 
 --       lookupAST nChain v
 --     Nothing -> Nothing
 --       --error "value referenced before defining"
@@ -200,7 +208,7 @@ applyFunc = undefined
 
 -- |  ---> inside function
 -- | NOTE! This also affects if classes and functions reach global AST
-evalTopLevel :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => JSTopLevel a -> m (Either (ExprAST a) ())
+evalTopLevel :: (Show a, Eq a, Fractional a, Read a, MonadJS m, MonadException m) => JSTopLevel a -> m (Either (ExprAST a) ())
 evalTopLevel  = \case
   Control' contr -> evalControl  contr
   Declare oop -> do
@@ -209,7 +217,7 @@ evalTopLevel  = \case
   Return expr -> Left <$> (evalExpr expr)
 
     -- case  of
-    -- Nothing -> error "this should never happen: return outside function"
+    -- Nothing -> throw $ JSError' "this should never happen: return outside function"
     -- Just _ -> do
     --   exprAST <- evalExpr expr 
     --   pure $ Left exprAST -- Left cuz end with this data 
@@ -217,7 +225,9 @@ evalTopLevel  = \case
   Break -> undefined -- ? -- i think im gonna do something else 
 -------------------------------------          
 -- | TODO(galen): var escapes scope of
-evalControl :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => Control a -> m (Either (ExprAST a) ())
+evalControl :: (Show a, Eq a, Fractional a, Read a, MonadJS m, MonadException m)
+            => Control a
+            -> m (Either (ExprAST a) ())
 evalControl  = \case
   While whileLoop -> evalWhileLoop whileLoop
   For forLoop -> evalForLoop forLoop 
@@ -226,7 +236,7 @@ evalControl  = \case
   TryExcept tryExcFin -> evalTryExcept tryExcFin
 
 -- | Used by Switch and Loops
-runStatementsWithBreak :: (Show a, Eq a, Fractional a, Read a, MonadJS m)
+runStatementsWithBreak :: (Show a, Eq a, Fractional a, Read a, MonadJS m, MonadException m)
                        => [JSTopLevel a]
                        -> m (Either (ExprAST a) ())
 runStatementsWithBreak [] = pure $ Right ()
@@ -240,7 +250,7 @@ runStatementsWithBreak (tLevel:tLevels) = do
       runStatements tLevels
 
 -- | Used by functions, try-excepts, and if statements
-runStatementsNoBreak :: (Show a, Eq a, Fractional a, Read a, MonadJS m)
+runStatementsNoBreak :: (Show a, Eq a, Fractional a, Read a, MonadJS m, MonadException m)
                        => [JSTopLevel a]
                        -> m (Either (ExprAST a) ())
 runStatementsNoBreak [] = pure $ Right ()
@@ -253,7 +263,9 @@ runStatements (tLevel:tLevels) = do
       runStatements tLevels
 
 -- | Do these last: its basically just 'should we run these top levels?'
-evalWhileLoop :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => WhileLoop a -> m (Either (ExprAST a) ())
+evalWhileLoop :: (Eq a, Show a, Fractional a, Read a, MonadJS m, MonadException m)
+              => WhileLoop a
+              -> m (Either (ExprAST a) ())
 evalWhileLoop loop@(WhileLoop (condition,_) tLevels) = do
   exprC <- evalExpr condition
   booly <- runJS exprC
@@ -267,17 +279,57 @@ evalWhileLoop loop@(WhileLoop (condition,_) tLevels) = do
       
         
 -- | TODO: multiple Catch blocks based on what error
-  -- | TODO: error parser
+  -- | TODO: throw $ JSError' parser
 -- | STRICT!!!!!!!!!!!
 -- run try
 -- if we see an exception: run catch
 -- regardless: run finally
-evalTryExcept :: (Eq a, Fractional a, Read a, MonadJS m) => TryExceptFinally a -> m (Either (ExprAST a) ())
-evalTryExcept (TryExceptFinally [] catchFinally) = do undefined
-evalTryExcept (TryExceptFinally (tLevel:tryTopLevels) catchFinally) = do undefined
-  -- let runJS' = runJSWithCliOneExprWithError
+evalTryExcept :: (Eq a, Show a, Fractional a, Read a, MonadJS m, MonadException m)
+              => TryExceptFinally a
+              -> m (Either (ExprAST a) ())
+evalTryExcept (TryExceptFinally try catchFinally) = do 
+  let runJS' = runJSWithCliOneExprWithError
+  case try of
+    [] -> runFinally catchFinally
+    (tLevel:tryTopLevels') -> do 
+        eithExprC <- catch (fmap Right $ evalTopLevel tLevel) (\(JSError' e) -> pure . Left $ JSError' e)
+        case eithExprC of
+          Right (Left exprC) -> pure $ Left exprC
+          Right (Right ()) -> evalTryExcept $ TryExceptFinally tryTopLevels' catchFinally
+          Left jsError -> runCatch jsError catchFinally  
+          
+  where
+    runCatch ::  (Eq a, Show a, Fractional a, Read a, MonadJS m, MonadException m)
+             => JSError'
+             -> These (Catch a) (Finally a)
+             -> m (Either (ExprAST a) ())
+    runCatch jsError = \case
+      This catch@(_, catchTLevels) -> do
+        runStatements catchTLevels
+      That finally@(tLevels) -> do
+        eithExprC <- runFinally $ That finally
+        case eithExprC of
+          Left exprC -> pure $ Left exprC -- so we're saved by a return statement 
+          Right () -> throw jsError 
+        
 
-  -- exprC <- evalTopLevel tLevel 
+      all@(These catch@(_, catchTLevels) finally@(tLevels)) -> do
+        eithExprC <- runStatements catchTLevels
+        case eithExprC of
+          Left exprC -> pure $ Left exprC
+          Right () -> runFinally all
+        
+    
+    runFinally :: (Eq a, Show a, Fractional a, Read a, MonadJS m, MonadException m)
+               => These (Catch a) (Finally a)
+               -> m (Either (ExprAST a) ())
+    runFinally = \case
+      This catch@(_, tLevels) -> pure $ Right ()
+      That finally@(tLevels) -> runStatements tLevels 
+      These catch@(_, tLevels) finally@(finallyTLevels) -> runStatements finallyTLevels
+
+  
+
   -- case tLevel of
   --   Left returned -> pure $ Left returned
   --   Right () -> ""
@@ -297,7 +349,9 @@ evalTryExcept (TryExceptFinally (tLevel:tryTopLevels) catchFinally) = do undefin
 
   
 
-evalForLoop :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => ForLoop a -> m (Either (ExprAST a) ())
+evalForLoop :: (Eq a, Show a, Fractional a, Read a, MonadJS m, MonadException m)
+            => ForLoop a
+            -> m (Either (ExprAST a) ())
 evalForLoop (ForLoop (declare, (condition,_), iterables) tLevels) = do
   mapM_ evalJSOp $ fromMaybe [] declare
   let tLevels' = tLevels <> (fmap (Declare . Operation) $ fromMaybe [] $ iterables)
@@ -317,7 +371,9 @@ evalForLoop (ForLoop (declare, (condition,_), iterables) tLevels) = do
 eval :: String -> IO (JSValue a)
 eval = undefined
 
-evalIfStatement :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => IFStatement a -> m (Either (ExprAST a) ())
+evalIfStatement :: (Show a, Eq a, Fractional a, Read a, MonadJS m, MonadException m)
+                => IFStatement a
+                -> m (Either (ExprAST a) ())
 evalIfStatement (IFStatement (((condition,_), tLevels):c_ss)) = do
   exprC <- evalExpr condition
   booly <- runJS exprC
@@ -340,12 +396,12 @@ truthyJS = \case
 -- "" | 0 | false -> False
 -- _ -> True 
   
-runJS :: (Show b, Fractional b, Read a, Fractional a, MonadIO m) => ExprAST b -> m (JSValue a)
+runJS :: (Show b, Fractional b, Read a, Fractional a, MonadIO m, MonadException m) => ExprAST b -> m (JSValue a)
 runJS exprC = do
   let runnable = pack . writeExprC $ exprC
   strOut <- liftIO $ runJSWithCliOneExpr runnable
   case parse jsValueConsoleLog "" strOut of
-    Left _ -> error "improper assertion, should not use this func"
+    Left _ -> throw $ JSError' "improper assertion, should not use this func"
     Right v -> pure v 
 
   where
@@ -369,16 +425,18 @@ runJS exprC = do
       <|> (String' <$> (JSString <$> jsStringClog))
 
 
-runJSExpecting :: (Show b, Fractional b, MonadJS m) => Parsec JSVal () a -> ExprAST b -> m a
+runJSExpecting :: (Show b, Fractional b, MonadJS m, MonadException m) => Parsec JSVal () a -> ExprAST b -> m a
 runJSExpecting p exprC = do
   let runnable = pack . writeExprC $ exprC
   strOut <- liftIO $ runJSWithCliOneExpr runnable
   case parse p "" strOut of
-    Left _ -> error "improper assertion, should not use this func"
+    Left _ -> throw $ JSError' "improper assertion, should not use this func"
     Right v -> pure v 
   
 
-evalSwitch :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => SwitchStatement a -> m (Either (ExprAST a) ())
+evalSwitch :: (Show a, Eq a, Fractional a, Read a, MonadJS m, MonadException m)
+           => SwitchStatement a
+           -> m (Either (ExprAST a) ())
 --evalSwitch (SwitchStatement caseOn [] defaultCase) = do
 evalSwitch (SwitchStatement (caseOn,_) cs@(((caseVal,tLevels)):cases) defaultCase) = do
   caseOnC <- evalExpr caseOn
@@ -417,17 +475,17 @@ evalSwitch (SwitchStatement (caseOn,_) cs@(((caseVal,tLevels)):cases) defaultCas
           
 
 -- | IF there is no local AST then the global one will be affected
-evalDeclare :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => ObjectOriented a -> m () 
+evalDeclare :: (Eq a, Show a, Fractional a, Read a, MonadJS m, MonadException m) => ObjectOriented a -> m () 
 evalDeclare = \case
   Function' (Function mName argNames tLevels) ->
     let f = ValC . RecordC $
           GenericObject (Just $ Lambda argNames tLevels) (M.fromList [("name", ValC . StringC . JSString $ fromMaybe "(anonymous)" mName)])
     in case mName of
-      Nothing -> error "encountered top level function def with no name"
+      Nothing -> throw $ JSError' "encountered top level function def with no name"
       Just name -> putNewEntryASTs' [name] f
       
   Class cDef@(JSClass mName _ _ _) -> case mName of
-    Nothing -> error "encountered top level class def with no name"
+    Nothing -> throw $ JSError' "encountered top level class def with no name"
     Just name -> putNewEntryASTs' [name] (ClassAST cDef)
     
   Operation operation -> evalJSOp operation -- VOILA!
@@ -533,7 +591,7 @@ writeValue = \case
 -- | however this doesn't mean that if the expression is function app for example, that
 -- | it can't modify state
 -- | SO: we should no new keys after evalExpr in theory
-evalJSOp :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => JSOperation a -> m ()
+evalJSOp :: (Eq a, Show a, Fractional a, Read a, MonadJS m, MonadException m) => JSOperation a -> m ()
 evalJSOp (JSOperation _ varDecl expr) = do
   exprOut <- evalExpr expr
   case varDecl of
@@ -546,7 +604,7 @@ evalJSOp (JSOperation _ varDecl expr) = do
       exprC <- lookupASTs nameChain -- TODO(galen): lens for maps
       case exprC of
         Just exprC' -> modifyEntryASTs' nameChain $ PureOp (toAssocOperator opA) exprC' exprOut
-        Nothing -> error "attempted to modify missing variable"
+        Nothing -> throw $ JSError' "attempted to modify missing variable"
       
 
 toAssocOperator :: AssignOp -> Operator 
@@ -573,7 +631,7 @@ toAssocOperator = \case
 
 -- | This returns something that is unaffected by global state
 -- | TODO(galen): can we confirm that all illogical expressions that are syntacticall valid give JSUndefined?
-evalExpr :: (Fractional a, Show a, Eq a, Read a, MonadJS m) => Expr a -> m (ExprAST a)
+evalExpr :: (Fractional a, Show a, Eq a, Read a, MonadException m, MonadJS m) => Expr a -> m (ExprAST a)
 evalExpr = \case
   
   Reference r -> do
@@ -631,8 +689,8 @@ evalExpr = \case
         mLambda <- lookupASTs [name]
         case mLambda of
           Just (ValC (RecordC (GenericObject (Just lambda) _))) -> evalLambda lambda argsPure
-          Nothing -> error "Object does not exist" 
-          _ -> error "Object is not callable"
+          Nothing ->  throw $ JSError'  "Object does not exist" 
+          _ -> throw $ JSError' "Object is not callable"
             
 
   -- | TODO!
@@ -829,7 +887,7 @@ evalExpr = \case
 --                 super._something_ --> parent property (function only) 
                 
                 
---               _ -> error "type error: new used on non-class"
+--               _ -> throw $ JSError' "type error: new used on non-class"
 
 --           replaceSuper = do -- "super() ----> runParentConstructor pConstr"
 --             case topLevel of
@@ -883,7 +941,7 @@ evalExpr = \case
                 
 
 
-evalLambda :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => Lambda a -> [ExprAST a] -> m (ExprAST a)
+evalLambda :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) => Lambda a -> [ExprAST a] -> m (ExprAST a)
 evalLambda f@(Lambda argNames tLevels) argExprsPure = do
   addArgsToASTScope argNames argExprsPure --
   eithExprAST <- evalFuncInner tLevels
@@ -894,7 +952,7 @@ evalLambda f@(Lambda argNames tLevels) argExprsPure = do
     Left returned ->
       pure returned
 
-evalLambdaProperty :: (MonadJS m, Show a, Eq a, Fractional a, Read a) =>
+evalLambdaProperty :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) =>
                       Lambda a
                    -> [ExprAST a]
                    -> m (ExprAST a, GenericObject a)
@@ -909,16 +967,16 @@ evalLambdaProperty f@(Lambda argNames tLevels) argExprsPure = do
     Left returned ->
       pure (returned, this)
   where
-    getThis :: MonadJS m => m (GenericObject a)
+    getThis :: (MonadException m, MonadJS m) => m (GenericObject a)
     getThis = do
       (mInner, inters, GenericObject l g) <- getAST
       case mInner of
-        Nothing -> error "found no inner scope while evaluating function"
+        Nothing -> throw $ JSError' "found no inner scope while evaluating function"
         Just astI -> pure . (\(ValC (RecordC obj)) -> obj) . fromJust . (lookupAST ["this"]) $ astI
 
-evalFuncInner :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [JSTopLevel a] -> m (Either (ExprAST a) ())
+evalFuncInner :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) => [JSTopLevel a] -> m (Either (ExprAST a) ())
 evalFuncInner = runStatements   
--- evalFuncInner  :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [JSTopLevel a] -> m (Either (ExprAST a) ())
+-- evalFuncInner  :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) => [JSTopLevel a] -> m (Either (ExprAST a) ())
 -- evalFuncInner [] = pure $ Right ()"
 -- evalFuncInner (tLevel:tLevels) = do
 --   eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
@@ -928,7 +986,7 @@ evalFuncInner = runStatements
 --     Right () ->
 --       evalFuncInner tLevels
       
-zipArgs :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m [(Name,ExprAST a)]
+zipArgs :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m [(Name,ExprAST a)]
 zipArgs [] _ = pure []
 zipArgs (argName:argNames) [] = case argName of
   ArgName _ -> zipArgs argNames []
@@ -946,7 +1004,7 @@ zipArgs (argName:argNames) (exprC:exprCs) =
     
 
 -- By this point we've already eval'd the expr args
-addArgsToASTScope :: (MonadJS m, Eq a, Show a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
+addArgsToASTScope :: (MonadJS m, MonadException m, Eq a, Show a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
 addArgsToASTScope argNames exprCs = do
   newAST <- M.fromList <$> zipArgs argNames exprCs
   (mInner, inters, g) <- getAST
@@ -955,12 +1013,12 @@ addArgsToASTScope argNames exprCs = do
       putAST (Just $ GenericObject Nothing newAST, astI : inters, g) 
     Nothing ->
       case inters of
-        (x:xs) -> error "invalid function-scope state handling" 
+        (x:xs) -> throw $ JSError' "invalid function-scope state handling" 
         [] -> --logical
           putAST (Just $ GenericObject Nothing  newAST, [], g)
   
 -- Allow infinite nesting without scoping inwards, instead just referring to the same 'this'
-addArgsToASTScopeThis :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
+addArgsToASTScopeThis :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
 addArgsToASTScopeThis argNames exprs = do
   st@(mInner, inters, g) <- getAST
   args_ <- zipArgs argNames exprs
@@ -971,7 +1029,7 @@ addArgsToASTScopeThis argNames exprs = do
 
   where
     definitelyNoExistingThis args_ (mInner, inters, g) = case inters of
-      (x:xs) -> error "invalid handling of state"
+      (x:xs) -> throw $ JSError' "invalid handling of state"
       [] -> putAST (Just $ GenericObject Nothing (M.fromList args_), [], g)
 
     existingThis args_ (GenericObject l astI) (mInner, inters, g) = do 
@@ -1018,14 +1076,14 @@ removeDeclarationsFromScope = do
 --     getThis = do
 --       (mInner, inters, GenericObject g) <- getAST
 --       case mInner of
---         Nothing -> error "found no inner scope while evaluating function"
+--         Nothing -> throw $ JSError' "found no inner scope while evaluating function"
 --         Just astI -> pure . fromJust . (lookupAST ["this"]) $ astI
     
 --     removeDeclarationsFromScope :: MonadJS m => m ()
 --     removeDeclarationsFromScope = do
 --       (mInner, inters, GenericObject g) <- getAST 
 --       case mInner of
---         Nothing -> error "removal of non-existent AST upon completion of funcProp"
+--         Nothing -> throw $ JSError' "removal of non-existent AST upon completion of funcProp"
 --         Just astI ->
 --           let this = lookupAST ["this"] astI
 --               -- super = lookupAST ["super"] astI
@@ -1078,7 +1136,7 @@ removeDeclarationsFromScope = do
 --   case mInner of
 --     Nothing -> -- we must be in global
 --       case inters of
---         (x:xs) -> error "invalid handling of AST detected"
+--         (x:xs) -> throw $ JSError' "invalid handling of AST detected"
 --         [] -> lookupGlobal global 
 --     Just astI -> case lookupAST (n:nameChain) astI of
 --       Just e -> Just e 
@@ -1108,7 +1166,7 @@ removeDeclarationsFromScope = do
   --   True -> handleThis nameChain mArgs mChain
   --   False -> -- normal rules apply 
   --     case lookupASTs nameChain asts of
-  --       Nothing -> error $ "evalRef couldnt find: " <> (show nameChain)
+  --       Nothing -> throw $ JSError' $ "evalRef couldnt find: " <> (show nameChain)
   --       Just exprC -> handleFoundLookup nameChain exprC mArgs
 
   -- where
@@ -1121,7 +1179,7 @@ removeDeclarationsFromScope = do
   --     let globalLook =
   --           case lookupAST nameChain global of
   --             Just exprC -> handleFoundLookup nameChain exprC mArgs
-  --             Nothing -> error $ "ref using 'this' keyword not found:" <> (show nameChain)
+  --             Nothing -> throw $ JSError' $ "ref using 'this' keyword not found:" <> (show nameChain)
   --     case mInnerScope of
   --       Nothing -> globalLook -- is global
   --       Just astI -> case lookupAST nameChain astI of
@@ -1132,19 +1190,19 @@ removeDeclarationsFromScope = do
 
 
 -- | NOTE: fakeObject = { super : { f : function() {}, g : function() {} }, this : { x : 1}}
-evalRef :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => Ref a -> m (ExprAST a)
+evalRef :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) => Ref a -> m (ExprAST a)
 evalRef r@(Ref nameChain deps mArgs mChain) = do
   -- TODO: refactor
   asts@(mInnerScope, interScopes, global) <- getAST
 
   exprC <- lookupASTs nameChain
   case exprC of
-    Nothing -> error $ "lookup of non-existent ref: " <> (show nameChain)
+    Nothing -> throw $ JSError' $ "lookup of non-existent ref: " <> (show nameChain)
     Just exprC' -> handleFoundLookup nameChain exprC' mArgs mChain 
       
     
 --handleFoundLookup :: Ref -> ExprAST a -> m (ExprAST a)
-handleFoundLookup :: (MonadJS m, Eq a, Show a, Fractional a, Read a) =>
+handleFoundLookup :: (MonadJS m, MonadException m, MonadException m, Eq a, Show a, Fractional a, Read a) =>
                      [Name]
                   -> ExprAST a 
                   -> Maybe [Expr a]
@@ -1157,7 +1215,7 @@ handleFoundLookup nameChain exprC mArgs mChain = -- (Ref nameChain _ mArgs mChai
       let allButLast = Data.List.init nameChain
       oFrom <- lookupASTs allButLast
       case oFrom of
-        Nothing -> error "this should be impossible"
+        Nothing -> throw $ JSError' "this should be impossible"
         Just (ValC (RecordC objectFrom)) -> 
           case exprC of
             ValC (RecordC (GenericObject (Just lambda) propertiesF)) -> do
@@ -1167,10 +1225,10 @@ handleFoundLookup nameChain exprC mArgs mChain = -- (Ref nameChain _ mArgs mChai
               chainExprMaybe returned mChain
 
             ClassAST _ -> erroridcclass
-            _ -> error "type error: applied args to non function"
+            _ -> throw $ JSError' "type error: applied args to non function"
           
 -- factoring out helper
-tryApplyPropertyFunction :: (Show a, Fractional a, Eq a, Read a, MonadJS m) =>
+tryApplyPropertyFunction :: (Show a, Fractional a, Eq a, Read a, MonadJS m, MonadException m, MonadException m) =>
                             GenericObject a
                          -> Lambda a 
                          -> [Expr a]
@@ -1184,19 +1242,19 @@ tryApplyPropertyFunction objectFrom (Lambda argNames tLevels) args = do
 
 -- | we may need to run node in this case and with String
 -- (function f() {}).name -> 'f'
-chainExprMaybe :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => ExprAST a -> Maybe (Ref a) -> m (ExprAST a)
+chainExprMaybe :: (MonadJS m, MonadException m, Show a, Eq a, Fractional a, Read a) => ExprAST a -> Maybe (Ref a) -> m (ExprAST a)
 chainExprMaybe exprC = \case 
   Nothing -> pure exprC
   Just (chainRef :: Ref a) -> case exprC of
     ValC (RecordC jsRecordC') -> evalChainedRef jsRecordC' chainRef
-    ValC (StringC s) -> error "unimplemented" -- "".length()
-    --FuncAST f -> error "unimplemented" -- IMPLEMENTED!
-    _ -> error "type error: applied chain to unchainable type"
+    ValC (StringC s) -> throw $ JSError' "unimplemented" -- "".length()
+    --FuncAST f -> throw $ JSError' "unimplemented" -- IMPLEMENTED!
+    _ -> throw $ JSError' "type error: applied chain to unchainable type"
     
-evalChainedRef :: (Show a, MonadJS m, Eq a,  Fractional a, Read a) => GenericObject a -> Ref a -> m (ExprAST a)
+evalChainedRef :: (Show a, MonadJS m, MonadException m, Eq a,  Fractional a, Read a) => GenericObject a -> Ref a -> m (ExprAST a)
 evalChainedRef object (Ref nameChain deps mArgs mChain) = do
   case lookupAST nameChain object of
-    Nothing -> error "chain on non-existent property"
+    Nothing -> throw $ JSError' "chain on non-existent property"
     Just exprAST ->
 --          handleFoundLookup nameChain 
       case mArgs of
@@ -1214,7 +1272,7 @@ evalChainedRef object (Ref nameChain deps mArgs mChain) = do
             chainExprMaybe returned mChain 
  
           ClassAST _ -> erroridcclass
-          _ -> error "type error: applied args to non function"
+          _ -> throw $ JSError' "type error: applied args to non function"
 
               ---(returned, this') <- tryApplyPropertyFunction objectFrom lambda args
 
@@ -1255,7 +1313,7 @@ lookupAST (n:nChain) (GenericObject l ast) = --  {-:: GenericObject a-}) =
       [] -> Just v
       xs -> case v of
         ValC (RecordC kv) -> lookupAST nChain kv
-        _ -> Nothing -- TODO(galen): better error handling 
+        _ -> Nothing -- TODO(galen): better throw $ JSError' handling 
       --lookupAST nChain v
     Nothing -> Nothing
       --error "value referenced before defining"
@@ -1323,23 +1381,26 @@ handleInters nChain toPut (ast:asts) =
     Just _ -> x: (fmap (Nothing,) asts)
     Nothing -> x : (handleInters nChain toPut asts)
 
-modifyEntryASTs' :: (Eq a, Fractional a, Read a, MonadJS m) => NameChain -> ExprAST a -> m () -- FullAST a
+modifyEntryASTs' :: (Eq a, Fractional a, Read a, MonadJS m, MonadException m)
+                 => NameChain
+                 -> ExprAST a
+                 -> m () -- FullAST a
 modifyEntryASTs' nameChain toPut = do
   (mInner, inters, global) <- getAST
   case head nameChain == "this" of
     True -> case mInner of
       Nothing -> do 
         let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
-        when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+        when (mChange == Nothing) $  throw $ JSError'  "tried to modify non-existent entry" 
         putAST (mInner, inters, newGlobal)
       Just astI -> do 
         let (mChange, newASTI) = modifyEntryAST' nameChain toPut astI
-        when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+        when (mChange == Nothing) $  throw $ JSError'  "tried to modify non-existent entry" 
         putAST (Just newASTI, inters, global)
     False -> case mInner of
       Just astI -> do 
         let (mChange, newASTI) = modifyEntryAST' nameChain toPut astI
-        --when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+        --when (mChange == Nothing) $ throw $ JSError' "tried to modify non-existent entry" 
         case mChange of
           Just _ -> putAST (Just newASTI, inters, global)
           Nothing ->  do
@@ -1349,7 +1410,7 @@ modifyEntryASTs' nameChain toPut = do
               True -> putAST (mInner, inters', global)
               False -> do
                 let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
-                when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+                when (mChange == Nothing) $  throw $ JSError'  "tried to modify non-existent entry" 
                 putAST (mInner, inters, newGlobal)
       Nothing -> do
         let (succ, inters') = unzip $ handleInters nameChain toPut inters
@@ -1358,7 +1419,7 @@ modifyEntryASTs' nameChain toPut = do
           True -> putAST (mInner, inters', global)
           False -> do
             let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
-            when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+            when (mChange == Nothing) $ throw $ JSError' "tried to modify non-existent entry" 
             putAST (mInner, inters, newGlobal)
 
 
@@ -1426,8 +1487,9 @@ deleteFromASTs' nameChain = do
       in if bSucc
          then x : (fmap (False,) asts)
          else x : (handleInters nChain asts)
-    
-erroridcclass = error $ "not implemented, maybe no valid implementation here anyways(see comment)"
+
+erroridcclass :: MonadException m => m (ExprAST a)  
+erroridcclass = throw $ JSError'  $ "not implemented, maybe no valid implementation here anyways(see comment)"
                 <> "JS: Uncaught TypeError: Class constructor A cannot be invoked without 'new'"
                 -- would need to be preceded with new keyword, so idk if this
                 -- case will actually exist / is gonna be an error
