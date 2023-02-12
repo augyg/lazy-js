@@ -3,7 +3,7 @@
 , lens, lib, megaparsec, modern-uri, mtl, parallel, parsec
 , replace-megaparsec, stm, text, time, transformers
 , witherable, jsaddle, which, pkgs, raw-strings-qq, MissingH, nodejs
-, cabal-install, these, aeson
+, cabal-install, these, aeson, exception-transformers
 }:
 let
   # TODO(galen): figure out if these even matter or just nodejs or something 
@@ -29,6 +29,7 @@ mkDerivation {
     mtl parallel parsec replace-megaparsec stm text time transformers
     witherable jsaddle which
     raw-strings-qq MissingH these aeson
+    exception-transformers
     # nodejs
     # nodeDeps
     

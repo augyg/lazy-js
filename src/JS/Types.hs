@@ -41,6 +41,7 @@ data Fractional a => JSValue a = Number (JSNumber a)
                                | Record (JSObject a)
                                | JSUndefined
                                | NaN
+                               | Infinity 
                                deriving (Show, Eq, Ord) 
 
 

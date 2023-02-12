@@ -21,9 +21,11 @@ import Control.Monad (when)
 import Control.Applicative (some, liftA2)
 import Language.Haskell.TH (recover)
 import Data.Monoid (First(..))
+import Data.Either (isRight)
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Map as M
 import Data.Text (Text, pack, unpack, intercalate)
+import Data.Char (toLower)
 import System.Which
 import System.Process (CreateProcess(..), proc, readCreateProcess, readCreateProcessWithExitCode)
 import System.IO (hFlush)
@@ -33,7 +35,7 @@ import Data.Text.IO (hPutStr)
 import qualified Data.List
 
 data Link = Link Text -- TODO(galen): delete
-
+ 
 {-|
 
 GOAL: keep jsExpression parser as is, and convert
@@ -198,7 +200,7 @@ applyFunc = undefined
 
 -- |  ---> inside function
 -- | NOTE! This also affects if classes and functions reach global AST
-evalTopLevel :: (Eq a, Fractional a, Read a, MonadJS m) => JSTopLevel a -> m (Either (ExprAST a) ())
+evalTopLevel :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => JSTopLevel a -> m (Either (ExprAST a) ())
 evalTopLevel  = \case
   Control' contr -> evalControl  contr
   Declare oop -> do
@@ -215,7 +217,7 @@ evalTopLevel  = \case
   Break -> undefined -- ? -- i think im gonna do something else 
 -------------------------------------          
 -- | TODO(galen): var escapes scope of
-evalControl :: (Eq a, Fractional a, Read a, MonadJS m) => Control a -> m (Either (ExprAST a) ())
+evalControl :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => Control a -> m (Either (ExprAST a) ())
 evalControl  = \case
   While whileLoop -> evalWhileLoop whileLoop
   For forLoop -> evalForLoop forLoop 
@@ -223,28 +225,203 @@ evalControl  = \case
   Switch switch -> evalSwitch switch
   TryExcept tryExcFin -> evalTryExcept tryExcFin
 
+-- | Used by Switch and Loops
+runStatementsWithBreak :: (Show a, Eq a, Fractional a, Read a, MonadJS m)
+                       => [JSTopLevel a]
+                       -> m (Either (ExprAST a) ())
+runStatementsWithBreak [] = pure $ Right ()
+runStatementsWithBreak (Break:tLevels) = pure $ Right () 
+runStatementsWithBreak (tLevel:tLevels) = do
+  eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
+  case eithReturned of
+    Left exprC ->
+      pure $ Left exprC -- this is not a fail tho
+    Right () ->
+      runStatements tLevels
+
+-- | Used by functions, try-excepts, and if statements
+runStatementsNoBreak :: (Show a, Eq a, Fractional a, Read a, MonadJS m)
+                       => [JSTopLevel a]
+                       -> m (Either (ExprAST a) ())
+runStatementsNoBreak [] = pure $ Right ()
+runStatements (tLevel:tLevels) = do
+  eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
+  case eithReturned of
+    Left exprC ->
+      pure $ Left exprC -- this is not a fail tho
+    Right () ->
+      runStatements tLevels
+
 -- | Do these last: its basically just 'should we run these top levels?'
-evalWhileLoop :: (Eq a, Fractional a, Read a, MonadJS m) => WhileLoop a -> m (Either (ExprAST a) ())
-evalWhileLoop = undefined
-
-evalForLoop :: (Eq a, Fractional a, Read a, MonadJS m) => ForLoop a -> m (Either (ExprAST a) ())
-evalForLoop = undefined
-
-evalIfStatement :: (Eq a, Fractional a, Read a, MonadJS m) => IFStatement a -> m (Either (ExprAST a) ())
-evalIfStatement = undefined
-
-evalSwitch :: (Eq a, Fractional a, Read a, MonadJS m) => SwitchStatement a -> m (Either (ExprAST a) ())
-evalSwitch = undefined
+evalWhileLoop :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => WhileLoop a -> m (Either (ExprAST a) ())
+evalWhileLoop loop@(WhileLoop (condition,_) tLevels) = do
+  exprC <- evalExpr condition
+  booly <- runJS exprC
+  case truthyJS booly of
+    False -> pure $ Right () 
+    True -> do
+      out <- runStatements tLevels
+      case out of
+        Left x -> pure $ Left x
+        Right _ -> evalWhileLoop loop
+      
+        
+-- | TODO: multiple Catch blocks based on what error
+  -- | TODO: error parser
 -- | STRICT!!!!!!!!!!!
+-- run try
+-- if we see an exception: run catch
+-- regardless: run finally
 evalTryExcept :: (Eq a, Fractional a, Read a, MonadJS m) => TryExceptFinally a -> m (Either (ExprAST a) ())
-evalTryExcept = undefined
+evalTryExcept (TryExceptFinally [] catchFinally) = do undefined
+evalTryExcept (TryExceptFinally (tLevel:tryTopLevels) catchFinally) = do undefined
+  -- let runJS' = runJSWithCliOneExprWithError
+
+  -- exprC <- evalTopLevel tLevel 
+  -- case tLevel of
+  --   Left returned -> pure $ Left returned
+  --   Right () -> ""
+  
+  -- (exitCode, value, stderr) <- runJS' tLevel
+  -- case exitCode of
+  --   ExitFailure _ -> case catchFinally of
+  --     This catch -> 
+  --     That finally -> ""
+  --     These catch finally -> "" 
+  --  ExitSuccess -> recurse --case catchFinally of
+  --   --   That finally -> ""
+  --   --   These _ finally -> ""
+  --   --   This _ -> pure () 
+  
+  
+
+  
+
+evalForLoop :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => ForLoop a -> m (Either (ExprAST a) ())
+evalForLoop (ForLoop (declare, (condition,_), iterables) tLevels) = do
+  mapM_ evalJSOp $ fromMaybe [] declare
+  let tLevels' = tLevels <> (fmap (Declare . Operation) $ fromMaybe [] $ iterables)
+
+  out <- evalWhileLoop (WhileLoop (condition,[]) tLevels')
+  let toNameChain = \case { Let n -> [n]; Var n -> [n]; Const n -> [n]; Raw _ nc -> nc }
+  let namesToDelete = fmap toNameChain $ catMaybes $ (\(JSOperation _ vDecl _) -> vDecl) <$> (fromMaybe [] declare)
+  mapM_ deleteFromASTs' namesToDelete
+
+  pure out
+  -- start by defining the var declaration
+  -- in prime: 
+              -- IF passes check: run statements
+              -- run iterator
+  -- Complete with delete the variables
+
+eval :: String -> IO (JSValue a)
+eval = undefined
+
+evalIfStatement :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => IFStatement a -> m (Either (ExprAST a) ())
+evalIfStatement (IFStatement (((condition,_), tLevels):c_ss)) = do
+  exprC <- evalExpr condition
+  booly <- runJS exprC
+  if truthyJS booly 
+    then runStatements tLevels 
+    else evalIfStatement (IFStatement c_ss)
+
+truthyJS :: (Eq a, Fractional a) => JSValue a -> Bool
+truthyJS = \case
+  Boolean (JSBool b) -> b
+  Number (JSNumber num) -> if num == 0 then False else True
+  String' (JSString s) -> if s == "" then False else True
+  Null _ -> False
+  Record _ -> True
+  JSUndefined -> False
+  NaN -> False
+  Infinity -> True
+  
+
+-- "" | 0 | false -> False
+-- _ -> True 
+  
+runJS :: (Show b, Fractional b, Read a, Fractional a, MonadIO m) => ExprAST b -> m (JSValue a)
+runJS exprC = do
+  let runnable = pack . writeExprC $ exprC
+  strOut <- liftIO $ runJSWithCliOneExpr runnable
+  case parse jsValueConsoleLog "" strOut of
+    Left _ -> error "improper assertion, should not use this func"
+    Right v -> pure v 
+
+  where
+
+    jsStringClog = many anyChar 
+  
+    -- | DO NOT USE FOR PARSING A SCRIPT!!!!!!!!!
+    -- | This is strictly for handling that strings from console.log where we know that we
+    -- | will never get a variable name (as that would just become its refd value) and that strings
+    -- | are simply 
+    --jsValueConsoleLog :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSValue a)
+    jsValueConsoleLog = 
+      (Number <$> (try jsNumber))
+      <|> (Null <$> (try jsNull))
+      <|> (Boolean <$> (try jsBool))
+      <|> (Array <$> (try jsArray)) -- NOTE: this can be lazy cuz the parser will be lazy 
+      <|> (Record <$> (try jsonjsObject))
+      <|> (JSUndefined <$ (try $ string "undefined"))
+      <|> (NaN <$ (try $ string "NaN"))
+      <|> (Infinity <$ (try $ string "Infinity"))
+      <|> (String' <$> (JSString <$> jsStringClog))
+
+
+runJSExpecting :: (Show b, Fractional b, MonadJS m) => Parsec JSVal () a -> ExprAST b -> m a
+runJSExpecting p exprC = do
+  let runnable = pack . writeExprC $ exprC
+  strOut <- liftIO $ runJSWithCliOneExpr runnable
+  case parse p "" strOut of
+    Left _ -> error "improper assertion, should not use this func"
+    Right v -> pure v 
+  
+
+evalSwitch :: (Show a, Eq a, Fractional a, Read a, MonadJS m) => SwitchStatement a -> m (Either (ExprAST a) ())
+--evalSwitch (SwitchStatement caseOn [] defaultCase) = do
+evalSwitch (SwitchStatement (caseOn,_) cs@(((caseVal,tLevels)):cases) defaultCase) = do
+  caseOnC <- evalExpr caseOn
+  valueTarget <- runJS caseOnC
+  evalSwitch' valueTarget cs defaultCase
+  where
+    handleDefault (Just tLevels) = runStatementsWithBreak tLevels
+    handleDefault Nothing = pure $ Right () 
+    evalSwitch' _ [] defaultCase = handleDefault defaultCase 
+    evalSwitch' vTarget (((caseVal,tLevels)):cases) defaultCase =
+      case vTarget == caseVal of
+        False -> evalSwitch' vTarget cases defaultCase 
+        True -> do 
+          -- for some stupid reason, it will go until 'break' is encountered
+          -- so the case match only really dictates 'start statements here'
+          out <- runStatementsWithBreak tLevels
+          let noBreak = not $ elem Break tLevels 
+          let noReturn = isRight out -- Right () -> True -> normal statement
+          handleRunawaySwitch noBreak noReturn out cases defaultCase  
+
+    handleRunawaySwitch _ _ _ [] Nothing = pure $ Right () 
+    handleRunawaySwitch noBreak noReturn out [] (Just tLevels) = runStatementsWithBreak tLevels
+    handleRunawaySwitch noBreak noReturn out (((_,tLevels)):cases) defaultCase = 
+      case noReturn of
+        False -> pure out
+        True -> case noBreak of
+          False -> pure $ Right () 
+          True -> do 
+            out <- runStatementsWithBreak tLevels
+            let noBreak = not $ elem Break tLevels 
+            let noReturn = isRight out -- Right () -> True -> normal statement
+            handleRunawaySwitch noBreak noReturn out cases defaultCase
+
+
+          
+          
 
 -- | IF there is no local AST then the global one will be affected
-evalDeclare :: (Eq a, Fractional a, Read a, MonadJS m) => ObjectOriented a -> m () 
+evalDeclare :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => ObjectOriented a -> m () 
 evalDeclare = \case
   Function' (Function mName argNames tLevels) ->
     let f = ValC . RecordC $
-          GenericObject (Just $ Lambda argNames tLevels) (M.fromList [("name", ValC . StringC . JSString $ fromMaybe "" mName)])
+          GenericObject (Just $ Lambda argNames tLevels) (M.fromList [("name", ValC . StringC . JSString $ fromMaybe "(anonymous)" mName)])
     in case mName of
       Nothing -> error "encountered top level function def with no name"
       Just name -> putNewEntryASTs' [name] f
@@ -264,6 +441,90 @@ evalDeclare = \case
 
 
 
+showOp :: Operator -> String
+showOp = \case
+  Multiply -> "*"
+  Plus -> "+"
+  Subtract -> "-"
+  Exponentiation -> "**"
+  Division -> "/"
+  Modulo -> "%" 
+  Equal -> "==" -- (==)
+  EqualSameType -> "===" -- (===)
+  NotEqual -> "!="
+  NotEqualOrNotSameType -> "!=="
+  GreaterThan -> ">"
+  LessThan -> "<"
+  LessOrEqual -> "<="
+  GreaterOrEqual -> ">="
+  Ternary -> undefined -- ? ~~ isTrue -- Should be its own expression; doesnt fit here
+  AND -> "&&" 
+  OR -> "||"
+  NOT -> "!"
+  ANDB -> "&"
+  ORB -> "|"
+  NOTB -> "~"
+  XORB -> "^"
+  Shift s -> s
+
+-- | TODOs innit eh
+writeExprC :: (Show a, Fractional a) => ExprAST a -> String 
+writeExprC = \case
+  ValC v -> writeValue v
+  ClassAST (JSClass mName _ _ _) -> "\'[class " <> (fromMaybe "" mName) <> "]\'"
+  PureOp op e1 e2 -> writeExprC' e1 <> (showOp op) <> (writeExprC' e2)
+  where
+    writeExprC' = \case
+      ValC v -> writeValue' v
+      ClassAST (JSClass mName _ _ _) -> "\'[class " <> (fromMaybe "" mName) <> "]\'"
+      PureOp op e1 e2 -> writeExprC' e1 <> (showOp op) <> (writeExprC' e2)
+
+    writeValue' = \case
+      NumberC (JSNumber num) -> show num
+      StringC (JSString str) -> "\'" <> str <> "\'"
+      NullC _ -> "null"
+      BooleanC (JSBool bool) -> fmap toLower $ show bool
+      ArrayC (JSArrayC array) -> unpack $ intercalate "," (fmap (pack . writeExprC') array)
+      RecordC (GenericObject Nothing map) -> "[Object object]"
+      RecordC (GenericObject (Just (Lambda args tLevels)) map) -> do 
+        let writeRawExpr = \_ -> ""
+        let
+          writeArgName :: ArgName a -> String 
+          writeArgName = \case { ArgName n -> n ; ArgDef n expr -> n <> "=" <> (writeRawExpr expr) }
+        let
+          writeArgNames :: [ArgName a] -> String 
+          writeArgNames args' = Data.List.intercalate "," $ fmap writeArgName args'
+        let writeTopLevels = \_ -> "" 
+        let
+          writeFuncBody :: [JSTopLevel a] -> String 
+          writeFuncBody tLev = " not actually implemented: needs writeTopLevel  " <> writeTopLevels tLev
+        case M.lookup "name" map of
+          Nothing -> writeArgNames args <> " => " <> (writeFuncBody tLevels) 
+          Just (ValC (StringC (JSString name))) ->
+            "function " <> name <> (writeArgNames args) <> "{" <> (writeFuncBody tLevels) <> "}"
+      JSUndefinedC -> "undefined"
+
+writeValue :: (Show a, Fractional a) => JSValueC a -> String
+writeValue = \case
+  NumberC (JSNumber num) -> show num
+  StringC (JSString str) -> "\'" <> str <> "\'"
+  NullC _ -> "null"
+  BooleanC (JSBool bool) -> fmap toLower $ show bool
+  ArrayC (JSArrayC array) ->
+    let f arr = Data.List.intercalate "," arr
+    in "[" <> (f (fmap writeExprC array)) <> "]" 
+  RecordC (GenericObject mL map) ->
+    case mL of
+      Just lambda ->
+        let name = fromMaybe "(anonymous)" $ (\(ValC (StringC (JSString s))) -> s) <$> M.lookup "name" map
+        in "[Function " <> name <> "]"
+      Nothing -> 
+        let
+          f (k,v) = k <> ": " <> (writeExprC v)
+          writeMap map = Data.List.intercalate "," $ fmap f map 
+        in "{" <> (writeMap $ M.toList map) <> "}"
+  JSUndefinedC -> "undefined"
+  
 
 -- | TODO(galen): Can this handle setting a new property ? this.x = 1?     
 
@@ -272,7 +533,7 @@ evalDeclare = \case
 -- | however this doesn't mean that if the expression is function app for example, that
 -- | it can't modify state
 -- | SO: we should no new keys after evalExpr in theory
-evalJSOp :: (Eq a, Fractional a, Read a, MonadJS m) => JSOperation a -> m ()
+evalJSOp :: (Eq a, Show a, Fractional a, Read a, MonadJS m) => JSOperation a -> m ()
 evalJSOp (JSOperation _ varDecl expr) = do
   exprOut <- evalExpr expr
   case varDecl of
@@ -308,152 +569,11 @@ toAssocOperator = \case
   A_Nullish -> undefined -- x ? x : 2
     -- may just need to handle specially by checking if jsUndefined or Null 
 
--- | Can only affect innermost scope 
-putNewEntryASTs' :: MonadJS m => NameChain -> ExprAST a -> m ()
-putNewEntryASTs' nameChain exprC = do
-  (mInner, inters, global) <- getAST
-  case mInner of
-    Just astI ->
-      let astI' = putNewEntryAST' nameChain exprC astI
-      in putAST (Just astI', inters, global)
-    Nothing ->
-      let global' = putNewEntryAST' nameChain exprC global
-      in putAST (mInner, inters, global')
-
-
-putNewEntryAST' :: [Name] -> ExprAST a -> JSAST a -> JSAST a
-putNewEntryAST' (n:[]) exprC (GenericObject l kv) =
-  -- TODO(galen): for let and const, check if they already exist
-  GenericObject l $ M.insert n exprC kv  
-putNewEntryAST' (n:nameChain) exprC (GenericObject l kv) =
-  case M.lookup n kv of
-    Just exprC -> case exprC of
-      ValC (RecordC obj) -> --(GenericObject l2 obj)) ->
-        let GenericObject l2 newInnerObj = putNewEntryAST' nameChain exprC obj
-        in
-          --TODO(): better; more efficient 
-          GenericObject l $ M.insert n (ValC $ RecordC $ GenericObject l2 newInnerObj) kv
       
-
--- | isJust if full dot pattern was in this AST 
-lookupAST :: [Name] -> JSAST a -> Maybe (ExprAST a)
-lookupAST (n:nChain) (GenericObject l ast) = --  {-:: GenericObject a-}) =
-  case M.lookup n ast of
-    Just v -> case nChain of
-      [] -> Just v
-      xs -> case v of
-        ValC (RecordC kv) -> lookupAST nChain kv
-        _ -> Nothing -- TODO(galen): better error handling 
-      --lookupAST nChain v
-    Nothing -> Nothing
-      --error "value referenced before defining"
-
-
-lookupASTs :: MonadJS m => NameChain -> m (Maybe (ExprAST a))
-lookupASTs nameChain = do
-  (mInner, inters, global) <- getAST
-  case head nameChain == "this" of
-    True -> case mInner of
-      Nothing -> pure $ lookupAST nameChain global
-      Just astI -> case lookupAST nameChain astI of
-        Nothing -> pure $ lookupAST nameChain global
-        Just match -> pure $ Just match
-    False -> case mInner of
-      Just astI -> case lookupAST nameChain astI of  --pure $ Just match
-        Just match' -> pure $ Just match'
-        Nothing -> case getFirst . mconcat $ First . (lookupAST nameChain) <$> inters of
-          Just match' -> pure $ Just match'
-          Nothing -> pure $ lookupAST nameChain global 
-  
-      Nothing -> case getFirst . mconcat $ First . (lookupAST nameChain) <$> inters of
-        Just match' -> pure $ Just match'
-        Nothing -> pure $ lookupAST nameChain global 
-  
-prefix = Data.List.init 
-
--- case length nameChain == 1 of
---   True -> -- get from immediate object 
-
---updateLookupWithKey :: Ord k => (k -> a -> Maybe a) -> k -> Map k a -> (Maybe a, Map k a) 
-
-
-         
-modifyEntryAST' :: [Name] -> ExprAST a -> JSAST a -> (Maybe (ExprAST a), JSAST a)
-modifyEntryAST' (n:[]) toPut (GenericObject l kv) =
-  let (s, mappy) = M.updateLookupWithKey (\_ v -> Just toPut) n kv -- toPut
-  in (s, GenericObject l mappy)
-modifyEntryAST' (n:nameChain) toPut (GenericObject l kv) = -- not at last
-  let
-    -- analyze the key of our third arg 
-
-    (s,mappy) = M.updateLookupWithKey (modifyFunc nameChain toPut) n kv 
-  in 
-    (s, GenericObject l mappy)
-
-modifyFunc :: NameChain -> ExprAST a -> Name -> ExprAST a -> Maybe (ExprAST a)
-modifyFunc nameChain toPut _ = \case
-  ClassAST _ -> Nothing 
-  PureOp _ _ _ -> Nothing 
-  ValC (RecordC obj) ->
-    let (mSuccess, kv_updated) = modifyEntryAST' nameChain toPut obj
-    in case mSuccess of
-      Just _ -> Just . ValC . RecordC $ kv_updated
-      Nothing -> Nothing 
-
-
--- | Should move to MonadJS
-
-handleInters :: (Fractional a, Read a) => NameChain -> ExprAST a -> [MyAST a] -> [(Maybe (ExprAST a), MyAST a)]
-handleInters _ _ [] = [] 
-handleInters nChain toPut (ast:asts) =
-  let x@(mSucc, nAST) = modifyEntryAST' nChain toPut ast
-  in case mSucc of
-    Just _ -> x: (fmap (Nothing,) asts)
-    Nothing -> x : (handleInters nChain toPut asts)
-
-modifyEntryASTs' :: (Eq a, Fractional a, Read a, MonadJS m) => NameChain -> ExprAST a -> m () -- FullAST a
-modifyEntryASTs' nameChain toPut = do
-  (mInner, inters, global) <- getAST
-  case head nameChain == "this" of
-    True -> case mInner of
-      Nothing -> do 
-        let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
-        when (mChange == Nothing) $ error "tried to modify non-existent entry" 
-        putAST (mInner, inters, newGlobal)
-      Just astI -> do 
-        let (mChange, newASTI) = modifyEntryAST' nameChain toPut astI
-        when (mChange == Nothing) $ error "tried to modify non-existent entry" 
-        putAST (Just newASTI, inters, global)
-    False -> case mInner of
-      Just astI -> do 
-        let (mChange, newASTI) = modifyEntryAST' nameChain toPut astI
-        --when (mChange == Nothing) $ error "tried to modify non-existent entry" 
-        case mChange of
-          Just _ -> putAST (Just newASTI, inters, global)
-          Nothing ->  do
-            let (succ, inters') = unzip $ handleInters nameChain toPut inters
-            let succeeded = any isJust succ
-            case succeeded of
-              True -> putAST (mInner, inters', global)
-              False -> do
-                let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
-                when (mChange == Nothing) $ error "tried to modify non-existent entry" 
-                putAST (mInner, inters, newGlobal)
-      Nothing -> do
-        let (succ, inters') = unzip $ handleInters nameChain toPut inters
-        let succeeded = any isJust succ
-        case succeeded of
-          True -> putAST (mInner, inters', global)
-          False -> do
-            let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
-            when (mChange == Nothing) $ error "tried to modify non-existent entry" 
-            putAST (mInner, inters, newGlobal)
-
-
 
 -- | This returns something that is unaffected by global state
 -- | TODO(galen): can we confirm that all illogical expressions that are syntacticall valid give JSUndefined?
-evalExpr :: (Fractional a, Eq a, Read a, MonadJS m) => Expr a -> m (ExprAST a)
+evalExpr :: (Fractional a, Show a, Eq a, Read a, MonadJS m) => Expr a -> m (ExprAST a)
 evalExpr = \case
   
   Reference r -> do
@@ -763,7 +883,7 @@ evalExpr = \case
                 
 
 
-evalLambda :: (MonadJS m, Eq a, Fractional a, Read a) => Lambda a -> [ExprAST a] -> m (ExprAST a)
+evalLambda :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => Lambda a -> [ExprAST a] -> m (ExprAST a)
 evalLambda f@(Lambda argNames tLevels) argExprsPure = do
   addArgsToASTScope argNames argExprsPure --
   eithExprAST <- evalFuncInner tLevels
@@ -774,7 +894,10 @@ evalLambda f@(Lambda argNames tLevels) argExprsPure = do
     Left returned ->
       pure returned
 
-evalLambdaProperty :: (MonadJS m, Eq a, Fractional a, Read a) => Lambda a -> [ExprAST a] -> m (ExprAST a, GenericObject a)
+evalLambdaProperty :: (MonadJS m, Show a, Eq a, Fractional a, Read a) =>
+                      Lambda a
+                   -> [ExprAST a]
+                   -> m (ExprAST a, GenericObject a)
 evalLambdaProperty f@(Lambda argNames tLevels) argExprsPure = do
   addArgsToASTScopeThis argNames argExprsPure --
   eithExprAST <- evalFuncInner tLevels
@@ -793,19 +916,19 @@ evalLambdaProperty f@(Lambda argNames tLevels) argExprsPure = do
         Nothing -> error "found no inner scope while evaluating function"
         Just astI -> pure . (\(ValC (RecordC obj)) -> obj) . fromJust . (lookupAST ["this"]) $ astI
 
-
-  
-evalFuncInner :: (MonadJS m, Eq a, Fractional a, Read a) => [JSTopLevel a] -> m (Either (ExprAST a) ())
-evalFuncInner [] = pure $ Right ()
-evalFuncInner (tLevel:tLevels) = do
-  eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
-  case eithReturned of
-    Left exprC ->
-      pure $ Left exprC -- this is not a fail tho
-    Right () ->
-      evalFuncInner tLevels
+evalFuncInner :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [JSTopLevel a] -> m (Either (ExprAST a) ())
+evalFuncInner = runStatements   
+-- evalFuncInner  :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [JSTopLevel a] -> m (Either (ExprAST a) ())
+-- evalFuncInner [] = pure $ Right ()"
+-- evalFuncInner (tLevel:tLevels) = do
+--   eithReturned :: Either (ExprAST a) () <- evalTopLevel tLevel
+--   case eithReturned of
+--     Left exprC ->
+--       pure $ Left exprC -- this is not a fail tho
+--     Right () ->
+--       evalFuncInner tLevels
       
-zipArgs :: (MonadJS m, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m [(Name,ExprAST a)]
+zipArgs :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m [(Name,ExprAST a)]
 zipArgs [] _ = pure []
 zipArgs (argName:argNames) [] = case argName of
   ArgName _ -> zipArgs argNames []
@@ -823,7 +946,7 @@ zipArgs (argName:argNames) (exprC:exprCs) =
     
 
 -- By this point we've already eval'd the expr args
-addArgsToASTScope :: (MonadJS m, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
+addArgsToASTScope :: (MonadJS m, Eq a, Show a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
 addArgsToASTScope argNames exprCs = do
   newAST <- M.fromList <$> zipArgs argNames exprCs
   (mInner, inters, g) <- getAST
@@ -837,7 +960,7 @@ addArgsToASTScope argNames exprCs = do
           putAST (Just $ GenericObject Nothing  newAST, [], g)
   
 -- Allow infinite nesting without scoping inwards, instead just referring to the same 'this'
-addArgsToASTScopeThis :: (MonadJS m, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
+addArgsToASTScopeThis :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => [ArgName a] -> [ExprAST a] -> m ()
 addArgsToASTScopeThis argNames exprs = do
   st@(mInner, inters, g) <- getAST
   args_ <- zipArgs argNames exprs
@@ -1009,7 +1132,7 @@ removeDeclarationsFromScope = do
 
 
 -- | NOTE: fakeObject = { super : { f : function() {}, g : function() {} }, this : { x : 1}}
-evalRef :: (MonadJS m, Eq a, Fractional a, Read a) => Ref a -> m (ExprAST a)
+evalRef :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => Ref a -> m (ExprAST a)
 evalRef r@(Ref nameChain deps mArgs mChain) = do
   -- TODO: refactor
   asts@(mInnerScope, interScopes, global) <- getAST
@@ -1021,7 +1144,7 @@ evalRef r@(Ref nameChain deps mArgs mChain) = do
       
     
 --handleFoundLookup :: Ref -> ExprAST a -> m (ExprAST a)
-handleFoundLookup :: (MonadJS m, Eq a, Fractional a, Read a) =>
+handleFoundLookup :: (MonadJS m, Eq a, Show a, Fractional a, Read a) =>
                      [Name]
                   -> ExprAST a 
                   -> Maybe [Expr a]
@@ -1047,7 +1170,7 @@ handleFoundLookup nameChain exprC mArgs mChain = -- (Ref nameChain _ mArgs mChai
             _ -> error "type error: applied args to non function"
           
 -- factoring out helper
-tryApplyPropertyFunction :: (Fractional a, Eq a, Read a, MonadJS m) =>
+tryApplyPropertyFunction :: (Show a, Fractional a, Eq a, Read a, MonadJS m) =>
                             GenericObject a
                          -> Lambda a 
                          -> [Expr a]
@@ -1061,7 +1184,7 @@ tryApplyPropertyFunction objectFrom (Lambda argNames tLevels) args = do
 
 -- | we may need to run node in this case and with String
 -- (function f() {}).name -> 'f'
-chainExprMaybe :: (MonadJS m, Eq a, Fractional a, Read a) => ExprAST a -> Maybe (Ref a) -> m (ExprAST a)
+chainExprMaybe :: (MonadJS m, Show a, Eq a, Fractional a, Read a) => ExprAST a -> Maybe (Ref a) -> m (ExprAST a)
 chainExprMaybe exprC = \case 
   Nothing -> pure exprC
   Just (chainRef :: Ref a) -> case exprC of
@@ -1070,7 +1193,7 @@ chainExprMaybe exprC = \case
     --FuncAST f -> error "unimplemented" -- IMPLEMENTED!
     _ -> error "type error: applied chain to unchainable type"
     
-evalChainedRef :: (MonadJS m, Eq a,  Fractional a, Read a) => GenericObject a -> Ref a -> m (ExprAST a)
+evalChainedRef :: (Show a, MonadJS m, Eq a,  Fractional a, Read a) => GenericObject a -> Ref a -> m (ExprAST a)
 evalChainedRef object (Ref nameChain deps mArgs mChain) = do
   case lookupAST nameChain object of
     Nothing -> error "chain on non-existent property"
@@ -1096,17 +1219,213 @@ evalChainedRef object (Ref nameChain deps mArgs mChain) = do
               ---(returned, this') <- tryApplyPropertyFunction objectFrom lambda args
 
 
+
+-- | Can only affect innermost scope 
+putNewEntryASTs' :: MonadJS m => NameChain -> ExprAST a -> m ()
+putNewEntryASTs' nameChain exprC = do
+  (mInner, inters, global) <- getAST
+  case mInner of
+    Just astI ->
+      let astI' = putNewEntryAST' nameChain exprC astI
+      in putAST (Just astI', inters, global)
+    Nothing ->
+      let global' = putNewEntryAST' nameChain exprC global
+      in putAST (mInner, inters, global')
+
+
+putNewEntryAST' :: [Name] -> ExprAST a -> JSAST a -> JSAST a
+putNewEntryAST' (n:[]) exprC (GenericObject l kv) =
+  -- TODO(galen): for let and const, check if they already exist
+  GenericObject l $ M.insert n exprC kv  
+putNewEntryAST' (n:nameChain) exprC (GenericObject l kv) =
+  case M.lookup n kv of
+    Just exprC -> case exprC of
+      ValC (RecordC obj) -> --(GenericObject l2 obj)) ->
+        let GenericObject l2 newInnerObj = putNewEntryAST' nameChain exprC obj
+        in
+          --TODO(): better; more efficient 
+          GenericObject l $ M.insert n (ValC $ RecordC $ GenericObject l2 newInnerObj) kv
       
-      
-      
-      -- | best way to set this up is to allow infinite recursion (and therefore also simple lookups)
-      -- | and then check if its a func; if it is, then apply args if not (== [])
-      -- | then if we have args for a func: check if we chain (we can now assume the return-ed is an Object)
-         -- | DoChain --> pass return statement to chain statement
-               -- | Only ns@[Name] ~~ Property Grab from (Return x) --> \x -> evalRefObj ns x
-               -- | [Name] <+> FnCall ~~ Property Grab from (Return x) --> \x -> if isFn then evalFunc x args 
-                    -- | Except since this may infinitely repeat, call evalRef which will call evalFunc
+
+-- | isJust if full dot pattern was in this AST 
+lookupAST :: [Name] -> JSAST a -> Maybe (ExprAST a)
+lookupAST (n:nChain) (GenericObject l ast) = --  {-:: GenericObject a-}) =
+  case M.lookup n ast of
+    Just v -> case nChain of
+      [] -> Just v
+      xs -> case v of
+        ValC (RecordC kv) -> lookupAST nChain kv
+        _ -> Nothing -- TODO(galen): better error handling 
+      --lookupAST nChain v
+    Nothing -> Nothing
+      --error "value referenced before defining"
+
+
+lookupASTs :: MonadJS m => NameChain -> m (Maybe (ExprAST a))
+lookupASTs nameChain = do
+  (mInner, inters, global) <- getAST
+  case head nameChain == "this" of
+    True -> case mInner of
+      Nothing -> pure $ lookupAST nameChain global
+      Just astI -> case lookupAST nameChain astI of
+        Nothing -> pure $ lookupAST nameChain global
+        Just match -> pure $ Just match
+    False -> case mInner of
+      Just astI -> case lookupAST nameChain astI of  --pure $ Just match
+        Just match' -> pure $ Just match'
+        Nothing -> case getFirst . mconcat $ First . (lookupAST nameChain) <$> inters of
+          Just match' -> pure $ Just match'
+          Nothing -> pure $ lookupAST nameChain global 
+  
+      Nothing -> case getFirst . mconcat $ First . (lookupAST nameChain) <$> inters of
+        Just match' -> pure $ Just match'
+        Nothing -> pure $ lookupAST nameChain global 
+  
+prefix = Data.List.init 
+
+-- case length nameChain == 1 of
+--   True -> -- get from immediate object 
+
+--updateLookupWithKey :: Ord k => (k -> a -> Maybe a) -> k -> Map k a -> (Maybe a, Map k a) 
+
+
+         
+modifyEntryAST' :: [Name] -> ExprAST a -> JSAST a -> (Maybe (ExprAST a), JSAST a)
+modifyEntryAST' (n:[]) toPut (GenericObject l kv) =
+  let (s, mappy) = M.updateLookupWithKey (\_ v -> Just toPut) n kv -- toPut
+  in (s, GenericObject l mappy)
+modifyEntryAST' (n:nameChain) toPut (GenericObject l kv) = -- not at last
+  let
+    -- analyze the key of our third arg 
+
+    (s,mappy) = M.updateLookupWithKey (modifyFunc nameChain toPut) n kv 
+  in 
+    (s, GenericObject l mappy)
+
+modifyFunc :: NameChain -> ExprAST a -> Name -> ExprAST a -> Maybe (ExprAST a)
+modifyFunc nameChain toPut _ = \case
+  ClassAST _ -> Nothing 
+  PureOp _ _ _ -> Nothing 
+  ValC (RecordC obj) ->
+    let (mSuccess, kv_updated) = modifyEntryAST' nameChain toPut obj
+    in case mSuccess of
+      Just _ -> Just . ValC . RecordC $ kv_updated
+      Nothing -> Nothing 
+  ValC _ -> Nothing 
+
+-- | Should move to MonadJS
+
+handleInters :: (Fractional a, Read a) => NameChain -> ExprAST a -> [MyAST a] -> [(Maybe (ExprAST a), MyAST a)]
+handleInters _ _ [] = [] 
+handleInters nChain toPut (ast:asts) =
+  let x@(mSucc, nAST) = modifyEntryAST' nChain toPut ast
+  in case mSucc of
+    Just _ -> x: (fmap (Nothing,) asts)
+    Nothing -> x : (handleInters nChain toPut asts)
+
+modifyEntryASTs' :: (Eq a, Fractional a, Read a, MonadJS m) => NameChain -> ExprAST a -> m () -- FullAST a
+modifyEntryASTs' nameChain toPut = do
+  (mInner, inters, global) <- getAST
+  case head nameChain == "this" of
+    True -> case mInner of
+      Nothing -> do 
+        let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
+        when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+        putAST (mInner, inters, newGlobal)
+      Just astI -> do 
+        let (mChange, newASTI) = modifyEntryAST' nameChain toPut astI
+        when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+        putAST (Just newASTI, inters, global)
+    False -> case mInner of
+      Just astI -> do 
+        let (mChange, newASTI) = modifyEntryAST' nameChain toPut astI
+        --when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+        case mChange of
+          Just _ -> putAST (Just newASTI, inters, global)
+          Nothing ->  do
+            let (succ, inters') = unzip $ handleInters nameChain toPut inters
+            let succeeded = any isJust succ
+            case succeeded of
+              True -> putAST (mInner, inters', global)
+              False -> do
+                let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
+                when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+                putAST (mInner, inters, newGlobal)
+      Nothing -> do
+        let (succ, inters') = unzip $ handleInters nameChain toPut inters
+        let succeeded = any isJust succ
+        case succeeded of
+          True -> putAST (mInner, inters', global)
+          False -> do
+            let (mChange, newGlobal) = modifyEntryAST' nameChain toPut global
+            when (mChange == Nothing) $ error "tried to modify non-existent entry" 
+            putAST (mInner, inters, newGlobal)
+
+
+-- | Note: you can call delete of a non-existent variable so this is valid 
+deleteNameFromAST' :: [Name] -> JSAST a -> (Bool, JSAST a)
+deleteNameFromAST' (n:[]) (GenericObject l kv) =
+  let
+    keysBefore = length $ M.keys kv
+    newMap = M.delete n kv
+    keysAfter = length $ M.keys newMap
+  in if keysAfter + 1 == keysBefore then (True, GenericObject l newMap) else (False, GenericObject l newMap)
+deleteNameFromAST' (n:nChain) (GenericObject l kv) =
+  let
+    deleteFunc :: NameChain -> Name -> ExprAST a -> Maybe (ExprAST a)
+    deleteFunc nameChain' _ = \case
+      ClassAST _ -> Nothing
+      PureOp _ _ _ -> Nothing
+      ValC (RecordC obj) ->
+        case deleteNameFromAST' nameChain' obj of
+          (True, obj) -> Just . ValC . RecordC $ obj
+          (False, _) -> Nothing 
+    (s, mappy) = M.updateLookupWithKey (deleteFunc nChain) n kv
+  in
+    (isJust s, GenericObject l mappy)
+
+-- cant fail 
+deleteFromASTs' :: MonadJS m => NameChain -> m () -- FullAST a
+deleteFromASTs' nameChain = do
+  (mInner, inters, global) <- getAST
+  case head nameChain == "this" of
+    True -> case mInner of
+      Nothing -> do
+        let (_,g) = deleteNameFromAST' nameChain global
+        putAST (mInner, inters, g)
+      Just astI -> do
+        let (_,astI') = deleteNameFromAST' nameChain astI
+        putAST (Just astI', inters,global)
+    False -> case mInner of
+      Just astI -> do
+        let (diffed,astI') = deleteNameFromAST' nameChain astI
+        case diffed of
+          True -> putAST (Just astI', inters, global)
+          False -> do
+            let  (succ, inters') = unzip $ handleInters nameChain inters
+            let succeeded = any id succ
+            case succeeded of
+              True -> putAST (mInner, inters', global)
+              False -> do
+                let global' = deleteNameFromAST' nameChain global
+                putAST (mInner, inters, global)
+      Nothing -> do 
+        let  (succ, inters') = unzip $ handleInters nameChain inters
+        let succeeded = any id succ
+        case succeeded of
+          True -> putAST (mInner, inters', global)
+          False -> do
+            let global' = deleteNameFromAST' nameChain global
+            putAST (mInner, inters, global)
+  where
     
+    handleInters :: (Fractional a, Read a) => NameChain -> [MyAST a] -> [(Bool, MyAST a)]
+    handleInters _ [] = [] 
+    handleInters nChain (ast:asts) =
+      let x@(bSucc, nAST) = deleteNameFromAST' nChain ast
+      in if bSucc
+         then x : (fmap (False,) asts)
+         else x : (handleInters nChain asts)
     
 erroridcclass = error $ "not implemented, maybe no valid implementation here anyways(see comment)"
                 <> "JS: Uncaught TypeError: Class constructor A cannot be invoked without 'new'"
@@ -1149,9 +1468,9 @@ erroridcclass = error $ "not implemented, maybe no valid implementation here any
 
 
 
-testEval = do
-  x <- eval (JSOperation [] (Just (Let "x")) (Val (Boolean (JSBool True))))
-  print $ (\(Boolean (JSBool y)) -> y) x
+-- testEval = do
+--   x <- eval (JSOperation [] (Just (Let "x")) (Val (Boolean (JSBool True))))
+--   print $ (\(Boolean (JSBool y)) -> y) x
 
 -- | Control is in the haskell context and expression is in the JS context 
 
@@ -1233,8 +1552,8 @@ newtype ScriptWriter num m a = ScriptWriter { unScriptWriter :: WriterT (Script'
 --evalReference 
 
 --data JSOperation a = JSOperation [Dependency] (Maybe Name) (Expr a) --JS
-eval :: {-MonadJS m =>-} JSOperation a -> IO (JSValue n) -- could also be an Expr
-eval (JSOperation deps mName expr) = do
+eval' :: {-MonadJS m =>-} JSOperation a -> IO (JSValue n) -- could also be an Expr
+eval' (JSOperation deps mName expr) = do
   let
     deRef :: ((Expr a), [Dependency]) -> Expr a
     deRef = undefined
@@ -1271,14 +1590,19 @@ runNodeJS = runJSWithCli
 
 type DependencyScript = Text
 type TargetExpr = Text 
-runJS :: [DependencyScript] -> TargetExpr -> IO JSVal 
-runJS statements target = runJSWithCli $ Script mempty $ intercalate ";" statements <> ";" <> (clog target)
+
+runJS' :: [DependencyScript] -> TargetExpr -> IO JSVal 
+runJS' statements target = runJSWithCli $ Script mempty $ intercalate ";" statements <> ";" <> (clog target)
 
 clog e = ("console.log(" <> e <> ")")
 
 runJSWithCliOneExpr :: Text -> IO JSVal
 runJSWithCliOneExpr shownExpr = do
   runJSWithCli (Script mempty $ clog shownExpr)
+
+runJSWithCliOneExprWithError :: Text -> IO (ExitCode, JSVal, StdErr)
+runJSWithCliOneExprWithError shownExpr = do
+  runJSWithCliErr (Script mempty $ clog shownExpr)
 
 runJSWithCli :: Script -> IO JSVal 
 runJSWithCli (Script _ script) = do

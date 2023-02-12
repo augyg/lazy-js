@@ -45,6 +45,7 @@ library
                      , temporary
                      , process
                      , these
+                     , exception-transformers
   hs-source-dirs:      src
   default-language:    Haskell2010
 

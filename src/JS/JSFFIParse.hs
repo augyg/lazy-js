@@ -114,19 +114,14 @@ v-- | TODO(galen): Condition comes packaged with the [Dependency]
   -- Solution: can chain on any expression (except for Number|undefined|Bool: JSValue = { Set:Object} | { Set:Obj } })
 
 
--- TODO: functions as objects:
-
-   super()
-   super.f()
-   super.g() 
-
-(Name, Object)
-
-FROM: data JSObject a = JSObject [(Name, Expr a)] deriving (Show, Eq, Ord)
-TO:   data JSObject a = JSObject (Maybe Lambda) [(Name, Expr a)] deriving (Show, Eq, Ord)
-
 -- Ternary OP: x ? x : y
+  -- should be its own Expr case 
 
+
+(while | if | for ) all can be followed by single statement that doesnt use let const or var
+   --> No functions either EXCEPT anon funcs
+   --> would still technically be [JSTopLevel a] 
+   
 
 -}
 
@@ -178,7 +173,6 @@ testVarString = "var ue_id = 'WEBRWTDQ8PSAD8KS77XA'"
 -- test1 = parse (jsVarName >> jsString ) "" testVarString
 -- test3 = parse (jsVarName >> jsBool ) "" "var ue_navtiming = true"
 -- test4 = parse (jsVarName >> jsNull ) "" "var ue_navtiming = null"
-
 between' :: Stream s m Char => ParsecT s u m open -> ParsecT s u m end -> ParsecT s u m a -> ParsecT s u m [a]
 between' open close inside = do
   open
@@ -187,7 +181,7 @@ between' open close inside = do
 
 jsString :: Stream s m Char => ParsecT s u m JSString'
 jsString = do
-  str <- between' (char '\'') (char '\'') anyChar <|> (between' (char '\"') (char '\"') anyChar) 
+  str <- (try $ between' (char '\'') (char '\'') anyChar) <|> (between' (char '\"') (char '\"') anyChar) 
   pure $ JSString str
 
 -- | TODO(galen): parse as scientific 
@@ -216,14 +210,18 @@ manyTill_ p end = go
 
 jsValue :: (Read a, Fractional a, Stream s m Char) => ParsecT s u m (JSValue a)
 jsValue = 
-  (Number <$> jsNumber)
+  (Number <$> (try jsNumber))
   <|> (String' <$> jsString)
-  <|> (Null <$> jsNull)
-  <|> (Boolean <$> jsBool)
-  <|> (Array <$> jsArray) -- NOTE: this can be lazy cuz the parser will be lazy 
-  <|> (Record <$> jsonjsObject)
+  <|> (Null <$> (try jsNull))
+  <|> (Boolean <$> (try jsBool))
+  <|> (Array <$> (try jsArray)) -- NOTE: this can be lazy cuz the parser will be lazy 
+  <|> (Record <$> (try jsonjsObject))
   <|> (JSUndefined <$ (try $ string "undefined"))
   <|> (NaN <$ (try $ string "NaN"))
+  <|> (Infinity <$ (try $ string "Infinity"))
+
+
+
 
 jsArray :: (Fractional a, Read a, Stream s m Char) => ParsecT s u m (JSArray a)
 jsArray = do

@@ -1,7 +1,14 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
+
 module JS.MonadJS where
 
+import Control.Monad.Trans.Class
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State
+import Control.Monad.Exception
+import Control.Monad (liftM)
 import Data.Aeson 
 import qualified Data.Map as M
 import Data.Text 
@@ -59,7 +66,7 @@ Idea:
 
 type Html = String 
 
-class Monad m => MonadJS m where
+class (MonadIO m, Monad m) => MonadJS m where
   runJS' :: JS -> m () -- Update is in state 
   getAST :: m (FullAST a)
   putAST :: (FullAST a) -> m ()
@@ -130,7 +137,29 @@ resetSomeJS = undefined
 -- type JSAST = JSRecordC
 -- type MyAST = JSAST
 type FullAST a = (Maybe (MyAST a), [MyAST a], JSAST a)
-newtype JST m a = JST { runJST :: StateT (FullAST a) (ExceptT JSError m) a }
+newtype JST num m a = JST { runJST :: ExceptT JSError (StateT (FullAST num) m) a }
+  deriving (Functor, Applicative, Monad, MonadException)
+
+
+-- --\s -> Either Error (
+
+
+
+instance MonadTrans (JST num) where
+  --lift :: Monad m => m a -> t m a
+  lift m = JST $ ExceptT $ StateT $ \s -> do
+    a <- m
+    pure $ (Right a, s)
+
+  -- lift m = JST $ StateT $ \s -> ExceptT $ do
+  --   a <- m
+  --   pure $ Right (a, s)
+
+-- instance MonadJS (JST num m) where
+--   getAST = 
+  
+
+
 
 -- | TODO(Galen): add in forall m. MonadIO m => m
 newtype JSDomT m a = JSDomT { runJSDomT :: StateT (Html, JSAST a) (ExceptT JSError m) a }

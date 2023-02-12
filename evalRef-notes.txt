@@ -97,3 +97,14 @@
   -- | And prefer the innermost scope (for multiple functions)
   -- | (function (x) { var x = 2; return ((function(x){return x})(10))})(1) ---> Returns 10 NOT(2,1)
   -- | `this` is a synonym for the outer object (?)
+
+
+      
+      -- | best way to set this up is to allow infinite recursion (and therefore also simple lookups)
+      -- | and then check if its a func; if it is, then apply args if not (== [])
+      -- | then if we have args for a func: check if we chain (we can now assume the return-ed is an Object)
+         -- | DoChain --> pass return statement to chain statement
+               -- | Only ns@[Name] ~~ Property Grab from (Return x) --> \x -> evalRefObj ns x
+               -- | [Name] <+> FnCall ~~ Property Grab from (Return x) --> \x -> if isFn then evalFunc x args 
+                    -- | Except since this may infinitely repeat, call evalRef which will call evalFunc
+    
