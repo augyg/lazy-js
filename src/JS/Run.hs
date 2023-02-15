@@ -627,6 +627,8 @@ toAssocOperator = \case
   A_Nullish -> undefined -- x ? x : 2
     -- may just need to handle specially by checking if jsUndefined or Null 
 
+
+type This a = GenericObject a 
       
 
 -- | This returns something that is unaffected by global state
@@ -710,233 +712,80 @@ evalExpr = \case
   -- | then super stays the same (it just sits there until we use it) ((wait, is it usable in plain ctx?))
     -- | we just need to put them there when we create the object 
   -- | and all object properties become wrapped in 'this' reference 
-  New className argExprs -> undefined
-    -- commented out for compiler (see below)
-----------------------------------------------------------------------------------------------------------------
+  New className argExprs -> do
+    exprCs <- mapM evalExpr argExprs
+    obj <- fromJust <$> (recurseClasses (Just className) exprCs)
+    pure $ ValC $ RecordC obj
+    where
+      nameF :: (Fractional a, Show a, Eq a, Read a) => Method a -> (Name, ExprAST a)
+      nameF f@(Method methodName args tLevs) =
+        (methodName, ValC $ RecordC $ GenericObject (Just $ Lambda args tLevs) $ M.fromList [("name", ValC $ StringC $ JSString methodName)])
 
-    -- objC <- createNewObject className argExprs
-    -- pure $ ValC objC
-    -- -- | 1. fold methods into proper nameSpaces (these aren't eval'd yet, but they may be used) 
-    -- -- | 2. call base constructor 
-        
-    -- where
-    --   -- data JSClass a = JSClass (Maybe Extends) (Maybe (Constructor a)) [Method a] deriving (Show, Eq, Ord)
-    --   createNewObject' :: JSClass -> [ExprAST a] -> m (GenericObject a)
-    --   createNewObject' (JSClass mExtends mConstructor methods) args = do
-    --     let super = case mExtends of --if has extends then set super key
-    --           Just (JSClass mExtends mConstructor methods) -> Just $ constructorToLambda mConstructor
-    --           Nothing -> Nothing
-    --     let superMethods = case mExtends of  -- by folding
-    --           Just (JSClass mExtends mConstructor methods) -> fmap (nameF . coerceMethodToFunc) methods)
 
-    --     let superObjFunc = GenericObject super superMethods 
+      recurseClasses :: (Fractional a, Show a, Eq a, Read a, MonadException m, MonadJS m) => Maybe Name -> [ExprAST a] -> m (Maybe (GenericObject a))
+      recurseClasses mExtends externalArgs = case mExtends of 
+        Nothing -> pure Nothing
+        Just className -> do
+--          (JSClass mName mExtends mConstructor methods) <- lookupASTs [className]
+          maybeClass <- lookupASTs [className]
+          when (maybeClass == Nothing) $ throw $ JSError' "Extended class is undefined"
+          let ClassAST (JSClass mName mExtends mConstructor methods) = fromJust maybeClass 
+          
+          mMore <- recurseClasses mExtends externalArgs -- should return Nothing if there is no extends 
+          let isSuperCall = \case
+                Declare (Operation (JSOperation _ Nothing (ApplyFunc (Left "super") _))) -> True
+                _ -> False
+          let isFunc :: (Name, ExprAST a) -> Bool
+              isFunc = \case
+                (_, ValC (RecordC (GenericObject (Just lambda) _))) -> True 
+                _ -> False
+
+          ---------------------------------------
+          case mMore of
+            Nothing ->
+              -- Does not extend! 
+              case mConstructor of
+                Nothing -> -- not even a singular constructor
+                  pure $ Just $ GenericObject Nothing
+                  $ M.fromList $ [("this", ValC $ RecordC $ GenericObject Nothing (M.fromList $ fmap nameF methods))] <> (fmap nameF methods)
+
+                -- | This should never call a super()
+                Just constructor@(Method _ argNames tLevels) -> do
+                  --let this = GenericObject Nothing $ fromList [("this", GenericObject Nothing (M.fromList $ fmap nameF methods))]
+                  let this = ValC $ RecordC $ GenericObject Nothing (M.fromList $ fmap nameF methods)
+                  let constructor' = Lambda ((ArgName "this") : argNames) $ filter (not . isSuperCall) tLevels -- likely redundant 
+                  let args' = this : externalArgs 
+                  (_, GenericObject l thisUnlabeled) <- evalLambdaProperty constructor' args'
+                  pure $ Just $ GenericObject Nothing $ M.fromList [("this", ValC $ RecordC $ GenericObject l thisUnlabeled)] <> thisUnlabeled
             
-    --     let
-    --       thisMethods :: [(Name, ExprAST a)]
-    --       thisMethods = fmap (nameF . coerceMethodToFunc) methods
+            Just thisFromExtends@(GenericObject Nothing thisFields) -> do 
+              let supers = filter isFunc $ M.toList thisFields
+              let super = ValC $ RecordC $ GenericObject Nothing $ M.fromList supers
+              let this' = ValC $ RecordC $ GenericObject Nothing $ thisFields <> (M.fromList $ fmap nameF methods) 
+
+              let toExprC = ValC . RecordC 
               
-    --     (_, this) <- tryApplyPropertyFunction emptyJSRecord Nothing args
-            
-          
-    --   nameF :: Function a -> (Name, ExprAST a)
-    --   nameF f@(Function (Just methodName) args tLevs) = (methodName, FuncAST f)
+              case mConstructor of
+                Nothing -> do
+                  -- | Super had a constructor (for sure) but this does not
+                  -- | In this case is just fields of funcs
 
-
-          
-    --   callsSuper :: [JSTopLevel a] -> Bool
-    --   callsSuper = any f
-    --     where
-    --       f :: JSTopLevel a -> Bool
-    --       f = \case
-    --         Control _ -> False
-    --         Return _ -> False
-    --         Break -> False 
-    --         Declare oo -> case oo of
-    --           Function' _ -> False
-    --           Class _ -> False
-    --           Operation (JSOperation _ _ e) -> case e of
-    --             ApplyFunc (Left "super") _ -> True -- only case lol
-    --             _ -> False
-
-
-          
-
-
-
-          
-    --   runConstructor :: MonadJS m => Method a -> Maybe Extends -> m (GenericObject a)
-    --   runConstructor (Method _ argNames tLevels) mExtends = do
-    --     case mExtends of
-    --       Nothing -> ""
-    --       Just parentName -> 
-    --         case callsSuper tLevels of
-    --           True -> do  -- get super from parent and add this
-    --             (JSClass mExtends (Method _ argNamesExt tLevelsExt methods)) <- lookupASTs parentName
-                    
-    --           False -> "" -- simple
-              
-
-
-          
-    --   -- runConstructor :: MonadJS m => Method a -> Maybe Extends -> m (GenericObject a)
-    --   -- runConstructor (Method _ argNames tLevels) = do
-    --   --   case extends of
-    --   --     Just parentName -> do
-    --   --       (JSClass mExtends mConstructor methods) <- lookupASTs parentName
-    --   --       case mConstructor of
-    --   --         Just constructor ->
-    --   --           addArgsToASTScope [ArgName "super"]
-                    
-    --   --         Nothing -> pure () 
-    --   --     Nothing -> 
-            
-
-          
-    --   -- | NOTE: one fold is the difference between this and super 
-    --     -- | so fold all but the last to get super
-    --     -- | then fold this with the last/immediate class to get 'this'
-            
-    --   foldMethods :: [[Method a]] -> Map Name (Method a)
-    --   foldMethods = foldr f mempty 
-          
-    --   f :: [Method a] -> [Method a] -> Map Name (Method a)
-    --   f parent child =
-    --     let
-    --       parent' = M.fromList $ nameF <$> parent
-    --       child' = M.fromList $ nameF <$> child
-    --     in
-    --       M.union child' parent' 
-
-----------------------------------------------------------------------------------------------------------------
-        
-    -- if we have an extends: put super as the parent constructor
-
-    --   or the constructor will have a list of top levels, we could simply just replace it with
-    --   the super 
-        
---         where
---           -- Name results in a list of classes to fold, that can then be run as a function of sorts
---           fakeCase :: JSClass a -> [Expr a] -> m GenericObject
---           fakeCase (JSClass _ mConstructor _) exprs = do
---             case mConstructor of
---               Just c -> do
---                 _ {-will never be anything-} <- evalExpr $ ApplyFunc c exprs
---               Nothing -> do
---                 pure ()
-
---             addMethodsToThis 
-            
--- function that can refer to internal state
-
-
--- could we not call the chained function with also it's own internal state attached in the tree? 
-
--- super is also this
--- x is also this.x
--- this.x is also x 
-
---           createNewObject :: Name -> [Expr a] -> m GenericObject
---           createNewObject className argExprs = do
---             argsPure <- mapM evalExpr argExprs
-
---             could we fake this via a function-like interface
---             where we add to an object 'this'
-
---             let fakeAST = GenericObject [("this", GenericObject []), ("super", superConstructor)]
---             let thisToObject (GenericObject [("this", GenericObject props):otherNameSpaces]) = GenericObject props
-
-
---             coerceToFunctionReturningThis :: [JSClass a] -> [Expr a] -> ApplyFunc -- (-> GenericObject)
-
---             parent methods are available in 3 ways:
---             super.method
---             this.method
---             method
-
---             Maybe we should copy functions to both this and super keys
-
-
-
-
---             except all properties that are values are only accessible via this
-
---             I think this is cuz 
-            
---             -- declare all 
-
---             -- FALSE: cuz all the fields would be the same 
---             -- But how do we handle
-
---             -- let y = new A()
---             -- let z = y --> will still refer to y.<someProp> 
-            
---             shouldBeClass <- getAST className
---             case shouldBeClass of
---               ClassAST (JSClass mExtends mConstructor methods) -> do
---                 parentClasses <- getParentClasses mExtends
---                 super <- foldClasses parentClasses 
---                 -- get all methods as a name 'super' set to being field in type ObjectC
-
---                 -- this should work so long as we can fold it in, that for what we are instantiating, for name conflicts
---                 -- there is only one right answer: a parent or a child
-
---                   -- Child overrides the parent method
---                       -- so for any inner naming, there is only one correct ref 
-
---                 super() --> parent constructor(s)
---                 super._something_ --> parent property (function only) 
-                
-                
---               _ -> throw $ JSError' "type error: new used on non-class"
-
---           replaceSuper = do -- "super() ----> runParentConstructor pConstr"
---             case topLevel of
---               Declare (Operation (JSOperation _ _ (ApplyFunc (Left "super") args))) ->
---                 evalExpr <- ApplyFunc (toFunc parentConstructor) args
---                 -- but this would create a this object in state with a number of properties
-                
-          
---           foldClasses :: [JSClass a] -> JSClass a
---           foldClasses [] = 
---           foldClasses (c:cs) = do
---             let child = JSClass (Just parent) (Just constructorWithParentRef) methodsC
---             let parent = JSClass Nothing (Just constructor) methodsP
-
-
---             let methods' = union child parent
-
---             the constructor may have a super reference
---             -- ***In a child class constructor*** 'this' cannot be used until 'super' is called.
-
---             super is the parents constructor and may define some properties 
-            
---             otherwise: we have no way of getting any parent-based properties 
-
---             parent.constructor = constructor (a@_manyArgs_) { this.x = <v> ; this.y = <v2> }
---             child .constructor = constructor (a2, aArgs) { super(aArgs); this.z = this.y + this.x
-
---             So basically the constructors unfold into a set of expressions about this
-
---             so a method in child should have access to all methods and all attributes created by the parent and child
-
-            
-
---             case childConstructor of
---               Just constructorC -> ""
---               Nothing -> "" 
-            
+                  pure $ Just $ GenericObject Nothing $ M.fromList [("this", this')
+                                                                   ,("super", super)
+                                                                   ]
                   
-            
+                Just constructor@(Method _ argNames tLevels) -> do
+                  let tLevels' = filter (not . isSuperCall) tLevels
 
-       
---           getParentClasses :: Maybe Name -> m [JSClass a]
---           getParentClasses maybeName = do
---             case maybeName of
---               Nothing -> pure []
---               Just thisClass@(JSClass mExtends _ _) -> do
---                 manyClasses <- getParentClasses mExtends
---                 pure $ thisClass : manyClasses
+                  let constructor' = Lambda ((ArgName "this") : (ArgName "super") : argNames) tLevels'
+                  let args' = this' : super : externalArgs 
+                  evalLambdaProperty constructor' args'
 
+                  (_, GenericObject l thisUnlabeled) <- evalLambdaProperty constructor' args'
+                  pure $ Just
+                    $ GenericObject Nothing $ M.fromList [("this", ValC $ RecordC $ GenericObject l thisUnlabeled), ("super",super)] <> thisUnlabeled
+                    
+                                                                                    
                                 
                 
 
