@@ -7,7 +7,7 @@
 
 module JS.JS where
 
--- | Likely will make this module functions like with AST do some shit 
+
 
 import JS.MonadJS
 import JS.Source
@@ -20,6 +20,9 @@ import Control.Applicative (some, liftA2)
 import qualified Data.Map as M
 import Text.Parsec
 import Data.Text (Text, pack, unpack)
+
+-- | Likely will make this module functions like with AST do some shit 
+
 -- import Scrappy.Requests (getHtml, getHtml', SessionState(..))
 -- import Scrappy.Scrape (ScraperT, scrape, exists)
 -- import Scrappy.Elem.SimpleElemParser (el, manyTill_)
