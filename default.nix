@@ -3,7 +3,7 @@
 , lens, lib, megaparsec, modern-uri, mtl, parallel, parsec
 , replace-megaparsec, stm, text, time, transformers
 , witherable, jsaddle, which, pkgs, raw-strings-qq, MissingH, nodejs
-, cabal-install, these, aeson, exception-transformers
+, cabal-install, these, aeson, exception-transformers, temporary
 }:
 let
   # TODO(galen): figure out if these even matter or just nodejs or something 
@@ -29,12 +29,12 @@ mkDerivation {
     mtl parallel parsec replace-megaparsec stm text time transformers
     witherable jsaddle which
     raw-strings-qq MissingH these aeson
-    exception-transformers
+    exception-transformers temporary
     # nodejs
     # nodeDeps
     
     
-    cabal-install
+
     # Note that staticWhich 
   ];
   librarySystemDepends = [ nodejs ]; # nodejs nodeDeps nodeWithJSDom ]; # nodeDeps

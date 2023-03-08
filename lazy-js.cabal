@@ -17,10 +17,10 @@ description:
         raw JS using `eval`. Contributions welcome. 
 homepage:            https://github.com/augyg/lazy.jhs
 license:             BSD3
-license-file:        LICENSE
+--license-file:        LICENSE
 author:              Galen Sprout
 maintainer:          galen.sprout@gmail.com
-bug-reports:         https://github.com/Ace-Interview-Prep/scrappy/issues
+bug-reports:         https://github.com/Ace-Interview-Prep/lazy-js/issues
 x-curated:           uncurated-seeking-adoption
 stability:           Experimental
 category:            Javascript 

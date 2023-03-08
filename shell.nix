@@ -9,8 +9,8 @@ let
                        else pkgs.haskell.packages.${compiler};
 
   variant = if doBenchmark then pkgs.haskell.lib.doBenchmark else pkgs.lib.id;
-  scrappy = import ./default.nix;
-  drv = variant (haskellPackages.callPackage scrappy {});
+  lazy-js = import ./default.nix;
+  drv = variant (haskellPackages.callPackage lazy-js {});
 
 in
 
